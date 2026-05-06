@@ -1,0 +1,91 @@
+{
+  "preamble": {
+    "title": "iog/babybear",
+    "version": "0.0.1",
+    "plutusVersion": "v3",
+    "compiler": {
+      "name": "Aiken",
+      "version": "v1.1.21+42babe5"
+    },
+    "license": "MIT OR Apache-2.0"
+  },
+  "validators": [
+    {
+      "title": "poly_eval.poly_eval_puzzle.spend",
+      "datum": {
+        "title": "datum",
+        "schema": {
+          "$ref": "#/definitions/poly_eval~1Datum"
+        }
+      },
+      "redeemer": {
+        "title": "redeemer",
+        "schema": {
+          "$ref": "#/definitions/poly_eval~1Redeemer"
+        }
+      },
+      "compiledCode": "5901ee01010029800aba2aba1aab9faab9eaab9dab9a48888896600264653001300700198039804000cc01c0092225980099b8748008c01cdd500144c8cc896600266e1d2000300a375400d132598009807800c4c8cc004004dd61807801112cc0040062b30013370e900018069baa004899912cc004cdc4a400000315980099b8900148082264b30013001375a602660226ea800e264b30013002375a600260246ea80122b300132330010013758602a60266ea8038896600200314a315980098021bad3016001899801001180b800c5282024405513370e6466453001002800d20004008444b30010028800c660020073019002992cc004cdc4a41050101001e0031337000029040c0404007c400501519b803370c66e0800401120828080800f375a603000480190171bac30153013375401c6eb4c050c048dd50021bad30013012375400914a0808229410101180a180a800c528201e25980099b8948000006266e2000520828080800f8a50403d14a08072294100e180818071baa004337006530010019bac3011300f3754015480010011112cc00400a200319800801cc05000a66e000052002400c809120018b20188991980180198090011bad3010001403d16403460166ea801a2c8048c02c004c02cc030004c020dd50014528200c180380098019baa0078a4d13656400401",
+      "hash": "338e7dcc26730c703992a9bdd5b7cace81831533664debae22a94c7e"
+    },
+    {
+      "title": "poly_eval.poly_eval_puzzle.else",
+      "redeemer": {
+        "schema": {}
+      },
+      "compiledCode": "5901ee01010029800aba2aba1aab9faab9eaab9dab9a48888896600264653001300700198039804000cc01c0092225980099b8748008c01cdd500144c8cc896600266e1d2000300a375400d132598009807800c4c8cc004004dd61807801112cc0040062b30013370e900018069baa004899912cc004cdc4a400000315980099b8900148082264b30013001375a602660226ea800e264b30013002375a600260246ea80122b300132330010013758602a60266ea8038896600200314a315980098021bad3016001899801001180b800c5282024405513370e6466453001002800d20004008444b30010028800c660020073019002992cc004cdc4a41050101001e0031337000029040c0404007c400501519b803370c66e0800401120828080800f375a603000480190171bac30153013375401c6eb4c050c048dd50021bad30013012375400914a0808229410101180a180a800c528201e25980099b8948000006266e2000520828080800f8a50403d14a08072294100e180818071baa004337006530010019bac3011300f3754015480010011112cc00400a200319800801cc05000a66e000052002400c809120018b20188991980180198090011bad3010001403d16403460166ea801a2c8048c02c004c02cc030004c020dd50014528200c180380098019baa0078a4d13656400401",
+      "hash": "338e7dcc26730c703992a9bdd5b7cace81831533664debae22a94c7e"
+    }
+  ],
+  "definitions": {
+    "Int": {
+      "dataType": "integer"
+    },
+    "List<Int>": {
+      "dataType": "list",
+      "items": {
+        "$ref": "#/definitions/Int"
+      }
+    },
+    "poly_eval/Datum": {
+      "title": "Datum",
+      "description": "Stored on-chain: the public evaluation statement.",
+      "anyOf": [
+        {
+          "title": "Datum",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "point",
+              "description": "Evaluation point x in BabyBear.",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "expected",
+              "description": "Expected value P(x) mod p.",
+              "$ref": "#/definitions/Int"
+            }
+          ]
+        }
+      ]
+    },
+    "poly_eval/Redeemer": {
+      "title": "Redeemer",
+      "description": "Provided by the redeemer: the polynomial witness.",
+      "anyOf": [
+        {
+          "title": "Redeemer",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "coefficients",
+              "description": "Coefficients in decreasing degree order: [c_n, c_{n-1}, ..., c_0].\n Represents c_n * x^n + ... + c_1 * x + c_0.",
+              "$ref": "#/definitions/List<Int>"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

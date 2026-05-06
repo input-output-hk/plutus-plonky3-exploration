@@ -24,45 +24,30 @@ pub fn is_valid(a: Int) -> Bool {
 
 /// Reduce any integer into [0, p).
 pub fn from_int(n: Int) -> Int {
-  let r = n % prime
-  if r < 0 {
-    r + prime
-  } else {
-    r
-  }
+  n % prime
 }
 
 // ── Arithmetic ────────────────────────────────────────────────────────────────
 
 /// (a + b) mod p.
 pub fn add(a: Int, b: Int) -> Int {
-  // a + b < 2p, so a single conditional subtraction suffices.
-  let s = a + b
-  if s >= prime {
-    s - prime
-  } else {
-    s
-  }
+  (a + b) % prime
 }
 
 /// (a - b) mod p.
 pub fn sub(a: Int, b: Int) -> Int {
   // a - b + p is in [1, 2p-1], always positive, so % is Euclidean here.
-  (a - b + prime) % prime
+  (a - b) % prime
 }
 
 /// (a * b) mod p.
 pub fn mul(a: Int, b: Int) -> Int {
-  a * b % prime
+  (a * b) % prime
 }
 
 /// -a mod p.
 pub fn neg(a: Int) -> Int {
-  if a == 0 {
-    0
-  } else {
-    prime - a
-  }
+  (-a) % prime
 }
 
 /// a^2 mod p.
@@ -87,7 +72,7 @@ fn do_pow(base: Int, exp: Int, acc: Int) -> Int {
 
 /// Multiplicative inverse via Fermat's little theorem: a^(p-2) mod p.
 /// Returns `None` for the zero element.
-pub fn inverse(a: Int) -> Option<Int> {
+pub fn inverse_fermat(a: Int) -> Option<Int> {
   if a == 0 {
     None
   } else {
@@ -96,8 +81,8 @@ pub fn inverse(a: Int) -> Option<Int> {
 }
 
 /// a / b = a * b^{-1} mod p.  Returns `None` if b == 0.
-pub fn div(a: Int, b: Int) -> Option<Int> {
-  when inverse(b) is {
+pub fn div_fermat(a: Int, b: Int) -> Option<Int> {
+  when inverse_fermat(b) is {
     None -> None
     Some(b_inv) -> Some(mul(a, b_inv))
   }
@@ -250,6 +235,11 @@ fn do_inner_product(a: List<Int>, b: List<Int>, acc: Int) -> Int {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+test basic_mod() {
+// modulus results always within [0, p)
+  7 % 7 == 0 &&  11 % 7 == 4 && (-3) % 7 == 4 && (-10) % 7 == 4
+}
+
 
 test add_wraps_at_prime() {
   add(prime - 1, 1) == 0
@@ -304,27 +294,27 @@ test pow_one_exponent() {
   pow(99, 1) == 99
 }
 
-test inverse_round_trip() {
-  when inverse(7) is {
+test inverse_fermat_round_trip() {
+  when inverse_fermat(7) is {
     None -> False
     Some(inv) -> mul(7, inv) == 1
   }
 }
 
-test inverse_of_zero() {
-  inverse(0) == None
+test inverse_fermat_of_zero() {
+  inverse_fermat(0) == None
 }
 
-test div_exact() {
+test div_fermat_exact() {
   // 6 / 3 = 2
-  when div(6, 3) is {
+  when div_fermat(6, 3) is {
     None -> False
     Some(result) -> result == 2
   }
 }
 
-test div_by_zero() {
-  div(5, 0) == None
+test div_fermat_by_zero() {
+  div_fermat(5, 0) == None
 }
 
 test eval_poly_constant() {
@@ -381,7 +371,7 @@ test inverse_gcd_of_zero() {
 
 test inverse_gcd_matches_fermat() {
   // Both methods must agree on every input.
-  inverse_gcd(12345) == inverse(12345)
+  inverse_gcd(12345) == inverse_fermat(12345)
 }
 
 test div_gcd_exact() {
@@ -409,9 +399,10 @@ test inverse_binary_gcd_of_zero() {
 test inverse_binary_gcd_matches_fermat() {
   // All three inversion methods must agree.
   let a = 12345
+  let c = inverse_fermat(a)
   and {
-    inverse_binary_gcd(a) == inverse(a),
-    inverse_gcd(a) == inverse(a),
+    inverse_binary_gcd(a) == c,
+    inverse_gcd(a) == c,
   }
 }
 

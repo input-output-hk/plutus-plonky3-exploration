@@ -1,11 +1,10 @@
+// ── Constants ─────────────────────────────────────────────────────────────────
+
 /// BabyBear prime field: F_p where p = 2^31 - 2^27 + 1 = 2013265921.
 ///
 /// All functions accept and return canonical representatives in [0, p).
 /// Inputs outside this range produce unspecified results unless `from_int`
 /// is used to normalise them first.
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 /// The BabyBear prime: 2^31 - 2^27 + 1.
 pub const prime: Int = 2013265921
 
@@ -31,23 +30,23 @@ pub fn from_int(n: Int) -> Int {
 
 /// (a + b) mod p.
 pub fn add(a: Int, b: Int) -> Int {
-  (a + b) % prime
+  ( a + b ) % prime
 }
 
 /// (a - b) mod p.
 pub fn sub(a: Int, b: Int) -> Int {
   // a - b + p is in [1, 2p-1], always positive, so % is Euclidean here.
-  (a - b) % prime
+  ( a - b ) % prime
 }
 
 /// (a * b) mod p.
 pub fn mul(a: Int, b: Int) -> Int {
-  (a * b) % prime
+  a * b % prime
 }
 
 /// -a mod p.
 pub fn neg(a: Int) -> Int {
-  (-a) % prime
+  -a % prime
 }
 
 /// a^2 mod p.
@@ -177,10 +176,10 @@ fn do_binary_gcd(a: Int, b: Int, u: Int, v: Int, steps: Int) -> Int {
   } else if a % 2 == 1 {
     if a < b {
       // Swap (a,b),(u,v) then subtract: new state before shift = (b-a, a, v-u, u)
-      do_binary_gcd((b - a) / 2, a, v - u, u * 2, steps - 1)
+      do_binary_gcd(( b - a ) / 2, a, v - u, u * 2, steps - 1)
     } else {
       // Subtract only: new state before shift = (a-b, b, u-v, v)
-      do_binary_gcd((a - b) / 2, b, u - v, v * 2, steps - 1)
+      do_binary_gcd(( a - b ) / 2, b, u - v, v * 2, steps - 1)
     }
   } else {
     // a is even: shift a right, double v to restore the invariant
@@ -236,10 +235,9 @@ fn do_inner_product(a: List<Int>, b: List<Int>, acc: Int) -> Int {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test basic_mod() {
-// modulus results always within [0, p)
-  7 % 7 == 0 &&  11 % 7 == 4 && (-3) % 7 == 4 && (-10) % 7 == 4
+  // modulus results always within [0, p)
+  7 % 7 == 0 && 11 % 7 == 4 && -3 % 7 == 4 && -10 % 7 == 4
 }
-
 
 test add_wraps_at_prime() {
   add(prime - 1, 1) == 0

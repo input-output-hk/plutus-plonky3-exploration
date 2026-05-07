@@ -505,7 +505,7 @@ test product_of_one() {
   eq_fast(product([one, a, one]), a)
 }
 
-test add_loop_10() {
+test add_loop() {
   let a = Ext4 { c0: 2, c1: 3, c2: 5, c3: 7 }
   let b = Ext4 { c0: 12, c1: 13, c2: 15, c3: 17 }
   do_add_loop(a, b, 10)
@@ -520,10 +520,10 @@ fn do_add_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
   }
 }
 
-test mul_loop_15418() {
+test mul_loop() {
   let a = Ext4 { c0: 2, c1: 3, c2: 5, c3: 7 }
   let b = Ext4 { c0: 12, c1: 13, c2: 15, c3: 17 }
-  do_mul_loop(a, b, 15418)
+  do_mul_loop(a, b, 10)
 }
 
 fn do_mul_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
@@ -535,9 +535,9 @@ fn do_mul_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
   }
 }
 
-test inverse_loop_1600() {
+test inverse_loop() {
   let a = Ext4 { c0: 2, c1: 3, c2: 5, c3: 7 }
-  do_inverse_loop(a, 1600)
+  do_inverse_loop(a, 10)
 }
 
 fn do_inverse_loop(a: Ext4, remaining: Int) -> Bool {

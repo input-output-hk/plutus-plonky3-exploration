@@ -1,3 +1,6 @@
+use babybear/field
+use cardano/transaction.{OutputReference, Transaction}
+
 /// Polynomial-evaluation puzzle over the BabyBear field.
 ///
 /// Funds locked at this script address can be spent by any redeemer that
@@ -7,10 +10,6 @@
 /// This is the core verification step in a univariate STARK verifier:
 /// checking that a committed polynomial evaluates to the expected value at a
 /// queried point.
-
-use cardano/transaction.{OutputReference, Transaction}
-use babybear/field
-
 /// Maximum degree of the witness polynomial (inclusive).
 /// Keeps on-chain execution units bounded.
 const max_degree: Int = 16

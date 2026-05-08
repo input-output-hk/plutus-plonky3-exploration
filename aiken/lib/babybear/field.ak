@@ -410,3 +410,85 @@ test inverse_binary_gcd_generator() {
     Some(inv) -> mul(31, inv) == 1
   }
 }
+
+// ── Cost benchmarks ───────────────────────────────────────────────────────────
+
+fn repeat_add(a: Int, b: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    repeat_add(add(a, b), b, n - 1)
+  }
+}
+
+fn repeat_mul(a: Int, b: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    repeat_mul(mul(a, b), b, n - 1)
+  }
+}
+
+fn repeat_inverse_fermat(a: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    let next =
+      when inverse_fermat(a) is {
+        None -> 1
+        Some(inv) -> inv
+      }
+    repeat_inverse_fermat(next, n - 1)
+  }
+}
+
+fn repeat_inverse_gcd(a: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    let next =
+      when inverse_gcd(a) is {
+        None -> 1
+        Some(inv) -> inv
+      }
+    repeat_inverse_gcd(next, n - 1)
+  }
+}
+
+fn repeat_inverse_binary_gcd(a: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    let next =
+      when inverse_binary_gcd(a) is {
+        None -> 1
+        Some(inv) -> inv
+      }
+    repeat_inverse_binary_gcd(next, n - 1)
+  }
+}
+
+test add_cost_100() {
+  let result = repeat_add(1, 1, 100)
+  result == result
+}
+
+test mul_cost_100() {
+  let result = repeat_mul(31, 31, 100)
+  result == result
+}
+
+test inverse_fermat_cost_100() {
+  let result = repeat_inverse_fermat(31, 100)
+  result == result
+}
+
+test inverse_gcd_cost_100() {
+  let result = repeat_inverse_gcd(31, 100)
+  result == result
+}
+
+test inverse_binary_gcd_cost_100() {
+  let result = repeat_inverse_binary_gcd(31, 100)
+  result == result
+}

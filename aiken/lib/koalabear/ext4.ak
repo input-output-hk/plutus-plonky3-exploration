@@ -448,10 +448,12 @@ test w_is_3() {
   w == 3
 }
 
-test add_loop() {
+// ── Cost benchmarks ───────────────────────────────────────────────────────────
+
+test add_cost_100() {
   let a = Ext4 { c0: 2, c1: 3, c2: 5, c3: 7 }
   let b = Ext4 { c0: 12, c1: 13, c2: 15, c3: 17 }
-  do_add_loop(a, b, 10)
+  do_add_loop(a, b, 100)
 }
 
 fn do_add_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
@@ -463,10 +465,10 @@ fn do_add_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
   }
 }
 
-test mul_loop() {
+test mul_cost_100() {
   let a = Ext4 { c0: 2, c1: 3, c2: 5, c3: 7 }
   let b = Ext4 { c0: 12, c1: 13, c2: 15, c3: 17 }
-  do_mul_loop(a, b, 10)
+  do_mul_loop(a, b, 100)
 }
 
 fn do_mul_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
@@ -478,9 +480,9 @@ fn do_mul_loop(a: Ext4, b: Ext4, remaining: Int) -> Bool {
   }
 }
 
-test inverse_loop() {
+test inverse_cost_100() {
   let a = Ext4 { c0: 2, c1: 3, c2: 5, c3: 7 }
-  do_inverse_loop(a, 10)
+  do_inverse_loop(a, 100)
 }
 
 fn do_inverse_loop(a: Ext4, remaining: Int) -> Bool {

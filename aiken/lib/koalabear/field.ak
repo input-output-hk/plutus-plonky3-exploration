@@ -230,3 +230,49 @@ test from_int_negative() {
 test from_int_large() {
   from_int(prime + 5) == 5
 }
+
+// ── Cost benchmarks ───────────────────────────────────────────────────────────
+
+fn repeat_add(a: Int, b: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    repeat_add(add(a, b), b, n - 1)
+  }
+}
+
+fn repeat_mul(a: Int, b: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    repeat_mul(mul(a, b), b, n - 1)
+  }
+}
+
+fn repeat_inverse(a: Int, n: Int) -> Int {
+  if n <= 0 {
+    a
+  } else {
+    let next =
+      when inverse(a) is {
+        None -> 1
+        Some(inv) -> inv
+      }
+    repeat_inverse(next, n - 1)
+  }
+}
+
+test add_cost_100() {
+  let result = repeat_add(1, 1, 100)
+  result == result
+}
+
+test mul_cost_100() {
+  let result = repeat_mul(31, 31, 100)
+  result == result
+}
+
+test inverse_cost_100() {
+  let result = repeat_inverse(31, 100)
+  result == result
+}

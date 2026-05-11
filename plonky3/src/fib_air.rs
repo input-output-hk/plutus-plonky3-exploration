@@ -1,26 +1,21 @@
 use core::borrow::Borrow;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_challenger::{DuplexChallenger, HashChallenger, SerializingChallenger32};
-use p3_koala_bear::KoalaBear;
-
+use p3_baby_bear::BabyBear;
+use p3_challenger::{HashChallenger, SerializingChallenger32, SerializingChallenger64};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{PrimeCharacteristicRing, PrimeField64};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
-
+use p3_goldilocks::Goldilocks;
+use p3_koala_bear::KoalaBear;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_sha256::Sha256;
-
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark::{StarkConfig, prove, verify};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 
-/// For testing the public values feature
 pub struct FibonacciAir {}
 
 impl<F> BaseAir<F> for FibonacciAir {
@@ -33,9 +28,6 @@ impl<F> BaseAir<F> for FibonacciAir {
     }
 
     fn max_constraint_degree(&self) -> Option<usize> {
-        // All constraints are guarded by is_first_row / is_transition / is_last_row
-        // (degree 1) applied to degree-1 expressions (trace vars minus public values),
-        // giving a max constraint degree of 2.
         Some(2)
     }
 }
@@ -114,22 +106,23 @@ impl<F> Borrow<FibonacciRow<F>> for [F] {
     }
 }
 
-// Keccak hash
-type Val = BabyBear;
-//type Val = KoalaBear;
-//type ByteHash = Keccak256Hash;
 type ByteHash = Sha256;
 type MyHash = SerializingHasher<ByteHash>;
 type MyCompress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
-type ValMmcs = MerkleTreeMmcs<Val, u8, MyHash, MyCompress, 2, 32>;
-type Challenge = BinomialExtensionField<Val, 4>;
-type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
-type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
-type Dft = Radix2DitParallel<Val>;
-type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
 
-fn make_bytehash_config(log_final_poly_len: usize) -> MyConfig {
+fn run_baby_bear() {
+    type Val = BabyBear;
+    type Challenge = BinomialExtensionField<Val, 4>;
+    type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
+    type ValMmcs = MerkleTreeMmcs<Val, u8, MyHash, MyCompress, 2, 32>;
+    type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
+    type Dft = Radix2DitParallel<Val>;
+    type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
+    type Config = StarkConfig<Pcs, Challenge, Challenger>;
+
+    let n = 8192;
+    let x = 1256953032u64;
+
     let hash = MyHash::new(ByteHash {});
     let compress = MyCompress::new(ByteHash {});
     let val_mmcs = ValMmcs::new(hash, compress, 0);
@@ -145,40 +138,120 @@ fn make_bytehash_config(log_final_poly_len: usize) -> MyConfig {
         mmcs: challenge_mmcs,
     };
     println!(
-        "conjectured soundness bits {}",
+        "Conjectured soundness bits {}",
         fri_params.conjectured_soundness_bits()
     );
     let pcs = Pcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::from_hasher(vec![], ByteHash {});
-    MyConfig::new(pcs, challenger)
-}
-
-fn main() {
-    // let n = 1 << 3;
-    // let x = 21;
-    let n = 8192;
-    let x = 1256953032;
-    // let n = 16384;
-    // let x = 1363957518;
-    // let n = 32768;
-    // let x = 441216660;
-    let log_final_poly_len = 2;
+    let config = Config::new(pcs, challenger);
 
     let trace = generate_trace_rows::<Val>(0, 1, n);
-    let config = make_bytehash_config(log_final_poly_len);
-    let pis = vec![BabyBear::ZERO, BabyBear::ONE, BabyBear::from_u64(x)];
-    //    let pis = vec![KoalaBear::ZERO, KoalaBear::ONE, KoalaBear::from_u64(x)];
+    let pis = vec![Val::ZERO, Val::ONE, Val::from_u64(x)];
+
+    prove_and_verify(&config, n, &pis, trace);
+}
+
+fn run_koala_bear() {
+    type Val = KoalaBear;
+    type Challenge = BinomialExtensionField<Val, 4>;
+    type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
+    type ValMmcs = MerkleTreeMmcs<Val, u8, MyHash, MyCompress, 2, 32>;
+    type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
+    type Dft = Radix2DitParallel<Val>;
+    type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
+    type Config = StarkConfig<Pcs, Challenge, Challenger>;
+
+    let n = 8192;
+    let x = 1651027547u64;
+
+    let hash = MyHash::new(ByteHash {});
+    let compress = MyCompress::new(ByteHash {});
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = FriParameters {
+        log_blowup: 1,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries: 100,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 16,
+        mmcs: challenge_mmcs,
+    };
+    println!(
+        "Conjectured soundness bits {}",
+        fri_params.conjectured_soundness_bits()
+    );
+    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::from_hasher(vec![], ByteHash {});
+    let config = Config::new(pcs, challenger);
+
+    let trace = generate_trace_rows::<Val>(0, 1, n);
+    let pis = vec![Val::ZERO, Val::ONE, Val::from_u64(x)];
+
+    prove_and_verify(&config, n, &pis, trace);
+}
+
+fn run_goldilocks() {
+    type Val = Goldilocks;
+    type Challenge = BinomialExtensionField<Val, 2>;
+    type Challenger = SerializingChallenger64<Val, HashChallenger<u8, ByteHash, 32>>;
+    type ValMmcs = MerkleTreeMmcs<Val, u8, MyHash, MyCompress, 2, 32>;
+    type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
+    type Dft = Radix2DitParallel<Val>;
+    type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
+    type Config = StarkConfig<Pcs, Challenge, Challenger>;
+
+    let n = 8192;
+    let x = 7032041643746701607u64;
+
+    let hash = MyHash::new(ByteHash {});
+    let compress = MyCompress::new(ByteHash {});
+    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = FriParameters {
+        log_blowup: 1,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries: 100,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 16,
+        mmcs: challenge_mmcs,
+    };
+    println!(
+        "Conjectured soundness bits {}",
+        fri_params.conjectured_soundness_bits()
+    );
+    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::from_hasher(vec![], ByteHash {});
+    let config = Config::new(pcs, challenger);
+
+    let trace = generate_trace_rows::<Val>(0, 1, n);
+    let pis = vec![Val::ZERO, Val::ONE, Val::from_u64(x)];
+
+    prove_and_verify(&config, n, &pis, trace);
+}
+
+fn prove_and_verify<SC>(
+    config: &SC,
+    n: usize,
+    pis: &[p3_uni_stark::Val<SC>],
+    trace: RowMajorMatrix<p3_uni_stark::Val<SC>>,
+) where
+    SC: p3_uni_stark::StarkGenericConfig,
+{
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     let start = std::time::Instant::now();
-    let proof = prove(&config, &FibonacciAir {}, trace, &pis);
+    let proof = prove(config, &FibonacciAir {}, trace, pis);
     let elapsed = start.elapsed();
-    println!("proving time = {:?}", elapsed);
+    println!("Proving time = {:?}", elapsed);
 
     println!(
         "quotient_chunks len = {:?}",
         proof.opened_values.quotient_chunks[0].len()
     );
-    println!("proof commitments = {:?}", proof.commitments);
 
     {
         let proof_bytes = postcard::to_allocvec(&proof).expect("Failed to serialize proof");
@@ -190,10 +263,24 @@ fn main() {
         println!("Proof degree bits: {}", proof.degree_bits);
     }
 
-    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
-
     let start = std::time::Instant::now();
-    verify(&config, &FibonacciAir {}, &proof, &pis).expect("verification failed");
+    verify(config, &FibonacciAir {}, &proof, pis).expect("verification failed");
     let elapsed = start.elapsed();
-    println!("verifying time = {:?}", elapsed);
+    println!("Verifying time = {:?}", elapsed);
+}
+
+fn main() {
+    let field = std::env::args().nth(1).unwrap_or_else(|| "g".to_string());
+    match field.as_str() {
+        "b" => run_baby_bear(),
+        "k" => run_koala_bear(),
+        "g" => run_goldilocks(),
+        _ => {
+            eprintln!(
+                "Unknown field '{}'. Choose: b (babybear), k (koalabear), g (goldilocks)",
+                field
+            );
+            std::process::exit(1);
+        }
+    }
 }

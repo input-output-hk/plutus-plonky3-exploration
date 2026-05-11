@@ -412,6 +412,17 @@ test inverse_binary_gcd_generator() {
 }
 
 // ── Cost benchmarks ───────────────────────────────────────────────────────────
+fn loop_only(n: Int) -> Int {
+  if n <= 0 {
+    0
+  } else {
+    loop_only(n - 1)
+  }
+}
+
+test loop_cost_100() {
+  loop_only(100) == 0
+}
 
 fn repeat_add(a: Int, b: Int, n: Int) -> Int {
   if n <= 0 {
@@ -469,12 +480,12 @@ fn repeat_inverse_binary_gcd(a: Int, n: Int) -> Int {
 }
 
 test add_cost_100() {
-  let result = repeat_add(1, 1, 100)
+  let result = repeat_add(prime - 15, prime - 31, 100)
   result == result
 }
 
 test mul_cost_100() {
-  let result = repeat_mul(31, 31, 100)
+  let result = repeat_mul(prime - 31, prime - 11, 100)
   result == result
 }
 

@@ -263,12 +263,12 @@ fn repeat_inverse(a: Int, n: Int) -> Int {
 }
 
 test add_cost_100() {
-  let result = repeat_add(1, 1, 100)
+  let result = repeat_add(prime - 15, prime - 31, 100)
   result == result
 }
 
 test mul_cost_100() {
-  let result = repeat_mul(31, 31, 100)
+  let result = repeat_mul(prime - 31, prime - 11, 100)
   result == result
 }
 

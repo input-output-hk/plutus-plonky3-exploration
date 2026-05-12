@@ -45,16 +45,47 @@ FriParameters {
 - Proof degree bits: 13
 - Verifying time = 2.802918ms
 
+### CircleStark with sha256
+
+- Circle conjectured soundness bits 116
+- Proving time = 52.098038ms
+- quotient_chunks len = 3
+- Proof size: 458782 bytes for n = 8192
+- Proof degree bits: 13
+- Verifying time = 2.790042ms
+
 ---
 
 ## Aiken
 
-In plonky3 verification (Fri + TwoAdicFriPcs):
+Plonky3 verification
+
+### Fri + TwoAdicFriPcs:
+
+Babybear/KoalaBear:
 
 - `SHA256 calls on 512 bit = 13429`
-- `binomial extension inverse = 1603`
-- `binomial extension mul = 15418`
 - `binomial extension add = 3509`
+- `binomial extension mul = 15418`
+- `binomial extension inverse = 1603`
+
+Goldilocks:
+
+- `SHA256 calls on 512 bit = 13442`
+- `binomial extension add = 3307`
+- `binomial extension mul = 14816`
+- `binomial extension inverse = 1603`
+
+### Fri + CirclePcs:
+
+Mersenne31:
+
+- `SHA256 calls on 512 bit = 15230`
+- `binomial extension add = 5168`
+- `binomial extension sub = 2960`
+- `binomial extension mul = 6026`
+- `cubic square = 2150`
+- `cubic inverse = 610`
 
 ### Hash 14,000 times on 512-bit input
 
@@ -73,9 +104,14 @@ In plonky3 verification (Fri + TwoAdicFriPcs):
 | koalabear_ext4  |   add_3509   | 80.75 M  | 28.37 B  |
 |                 |  mul_15418   | 966.60 M | 316.41 B |
 |                 | inverse_1603 | 224.08 M | 70.21 B  |
-| goldilocks_ext2 |   add_3509   | 40.87 M  | 13.62 B  |
-|                 |  mul_15418   | 358.27 M | 123.59 B |
+| goldilocks_ext2 |   add_3307   | 38.51 M  | 12.84 B  |
+|                 |  mul_14816   | 344.28 M | 118.76 B |
 |                 | inverse_1603 | 88.43 M  | 27.57 B  |
+| mersenne31_ext3 |   add_5168   | 88.36 M  | 30.34 B  |
+|                 |   sub_2960   | 50.61 M  | 17.37 B  |
+|                 |   mul_6026   | 285.37 M | 92.10 B  |
+|                 | square_2150  | 57.50 M  | 18.18 B  |
+|                 | inverse_610  | 52.14 M  | 16.24 B  |
 
 ---
 

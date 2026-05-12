@@ -3,6 +3,7 @@ use core::borrow::Borrow;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
 use p3_challenger::{HashChallenger, SerializingChallenger32, SerializingChallenger64};
+use p3_circle::CirclePcs;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
@@ -12,6 +13,7 @@ use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_mersenne_31::Mersenne31;
 use p3_sha256::Sha256;
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark::{StarkConfig, prove, verify};
@@ -233,6 +235,54 @@ fn run_goldilocks() {
     prove_and_verify(&config, n, &pis, trace);
 }
 
+fn run_circle() {
+    type CircleVal = Mersenne31;
+    type CircleChallenge = BinomialExtensionField<CircleVal, 3>;
+    type CircleValMmcs = MerkleTreeMmcs<CircleVal, u8, MyHash, MyCompress, 2, 32>;
+    type CircleChallengeMmcs = ExtensionMmcs<CircleVal, CircleChallenge, CircleValMmcs>;
+    type CircleChallenger = SerializingChallenger32<CircleVal, HashChallenger<u8, ByteHash, 32>>;
+    type CirclePcsType = CirclePcs<CircleVal, CircleValMmcs, CircleChallengeMmcs>;
+    type CircleConfig = StarkConfig<CirclePcsType, CircleChallenge, CircleChallenger>;
+
+    let n = 8192;
+    let x = 579107342;
+
+    let byte_hash = ByteHash {};
+    let field_hash = MyHash::new(byte_hash);
+    let compress = MyCompress::new(byte_hash);
+    let val_mmcs = CircleValMmcs::new(field_hash, compress, 0);
+    let challenge_mmcs = CircleChallengeMmcs::new(val_mmcs.clone());
+    let fri_params = FriParameters {
+        log_blowup: 1,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries: 100,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 16,
+        mmcs: challenge_mmcs,
+    };
+    println!(
+        "circle conjectured soundness bits {}",
+        fri_params.conjectured_soundness_bits()
+    );
+    let pcs = CirclePcsType {
+        mmcs: val_mmcs,
+        fri_params,
+        _phantom: core::marker::PhantomData,
+    };
+    let challenger = CircleChallenger::from_hasher(vec![], byte_hash);
+    let config = CircleConfig::new(pcs, challenger);
+
+    let trace = generate_trace_rows::<CircleVal>(0, 1, n);
+    let pis = vec![
+        CircleVal::from_u64(0),
+        CircleVal::from_u64(1),
+        CircleVal::from_u64(x),
+    ];
+
+    prove_and_verify(&config, n, &pis, trace);
+}
+
 fn prove_and_verify<SC>(
     config: &SC,
     n: usize,
@@ -241,8 +291,6 @@ fn prove_and_verify<SC>(
 ) where
     SC: p3_uni_stark::StarkGenericConfig,
 {
-    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
-
     let start = std::time::Instant::now();
     let proof = prove(config, &FibonacciAir {}, trace, pis);
     let elapsed = start.elapsed();
@@ -263,6 +311,8 @@ fn prove_and_verify<SC>(
         println!("Proof degree bits: {}", proof.degree_bits);
     }
 
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
     let start = std::time::Instant::now();
     verify(config, &FibonacciAir {}, &proof, pis).expect("verification failed");
     let elapsed = start.elapsed();
@@ -275,6 +325,7 @@ fn main() {
         "b" => run_baby_bear(),
         "k" => run_koala_bear(),
         "g" => run_goldilocks(),
+        "c" => run_circle(),
         _ => {
             eprintln!(
                 "Unknown field '{}'. Choose: b (babybear), k (koalabear), g (goldilocks)",

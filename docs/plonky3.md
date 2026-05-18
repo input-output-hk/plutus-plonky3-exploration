@@ -112,27 +112,31 @@ CirclePcs and TwoAdicFriPcs are both Polynomial Commitment Schemes (PCS) built o
 
 - **Periodic columns** are columns whose values repeat with a fixed period that divides the trace length. They are derived from public parameters and are never committed as part of the trace — instead, both prover and verifier compute them from the data provided here. For a trace of length `n` evaluated over a multiplicative subgroup `H = {g⁰, g¹, ..., gⁿ⁻¹}`, a periodic column with period `p` (where `p` divides `n`, both powers of 2) is defined as follows: Let `r = n/p` be the number of repetitions. The `p` values are interpreted as evaluations of a polynomial `f(x)` of degree `< p` over the subgroup `Hʳ = {g⁰, gʳ, g²ʳ, ..., g^((p-1)r)}` of order `p`. The periodic extension `f'(X) = f(Xʳ)` has degree `< p·r = n` and satisfies `f'(gⁱ) = f(gⁱʳ)`, which cycles through the `p` values as `i` increases. Periodic columns are public parameters and must be committed during initialization of the Fiat-Shamir transcript. The values returned are evaluations over a subgroup; callers may convert to coefficient form for efficient evaluation if needed. For example, if full domain size = 8, period = 2, then `folds = log2(8) - log2(2) = 3 - 1 = 2`. That means the query point is folded to `zeta^(2^2) = zeta^4`.
 
-- If zk is enabled: `coms_to_verify = vec![(random_commit, vec![(trace_domain, vec![(zeta, random_values)])])]` describes which commitment to verify, over which domain, at which point, with which opened values.
+- `coms_to_verify` is a list describing which commitment to verify, over which domain, at which point, with which opened values.
+  `zeta` is for the current row and `zeta_next` for the next row, if the AIR uses a next row
 
-- `trace_round = (commitments.trace, vec![(trace_domain, trace_points)])` says: verify the trace commitment over the trace domain at one or two points:
-  - `zeta` for the current row
-  - `zeta_next` for the next row, if the AIR uses a next row
+```
+vec![
+  (commitments.random, vec![(trace_domain, vec![(zeta, opened_values.random)])]),     if zk is enabled
+  (commitments.trace, vec![(trace_domain, vec![(zeta, opened_values.trace_local), (zeta_next, opened_values.trace_next)]])),
+  (commitments.quotient_chunks, vec![(rqc_domain, vec![(zeta, quotient_chunk)]),...])
+        for rqc_domain in randomized_quotient_chunks_domains and quotient_chunk in opened_values.quotient_chunks
+  (preprocessed_commit, vec![(trace_domain, vec![(zeta, opened_values.preprocessed_local), (zeta_next, opened_values.preprocessed_next)])]) if any
+]
+```
 
-- Extend `coms_to_verify` with `trace_round` and all quotient chunk openings. Quotient-chunks are opened on a larger domain (double the size of the original chunk domain) if zk is enabled.
+## FRI verification:
 
-- Extend `coms_to_verify` with preprocessed commitment verification if present.
-
-- **FRI verification**:
-  - `fri_alpha = hash(zeta, opening_points in commitments)`
-  - Verify that all query proofs have the same number of commit-phase openings as there are commit-phase commitments, i.e., `query_proof.commit_phase_openings.len() == proof.commit_phase_commits.len()`
-  - `log_arities`: extracts the folding schedule from the first query proof:
-    - look at the first query proof
-    - iterate over all commit-phase opening steps in that query proof
-    - read each step's `log_arity`
-  - Check that every query proof uses the same folding schedule as `log_arities`
-  - `betas`: generate all of the random challenges for the FRI rounds, checking PoW per round. For each `(comm, witness)` from `(commit_phase_commits, commit_pow_witnesses)`:
-    - Absorb `comm` into the transcript
-    - Check whether a given witness satisfies the PoW condition. After absorbing the witness, the challenger samples bits random bits and verifies that all bits sampled are zero. The sample method returns the next challenge value from a hash-based transcript. The hash challenger keeps an `output_buffer` of already-derived values: if that buffer is empty, it calls `flush()` to hash the current transcript input state and produces new output values; then removes and returns one element from the `output_buffer`. It's a configurable proof-of-work mechanism that intentionally makes proof generation harder, while keeping verification cheap. By requiring a PoW witness there, the protocol makes it harder for the prover to repeatedly reshuffle the transcript until it gets "nice" query positions or favorable randomness.
+- `fri_alpha = hash(zeta, opening_points in commitments)`
+- Verify that all query proofs have the same number of commit-phase openings as there are commit-phase commitments, i.e., `query_proof.commit_phase_openings.len() == proof.commit_phase_commits.len()`
+- `log_arities`: extracts the folding schedule from the first query proof:
+  - look at the first query proof
+  - iterate over all commit-phase opening steps in that query proof
+  - read each step's `log_arity`
+- Check that every query proof uses the same folding schedule as `log_arities`
+- `betas`: generate all of the random challenges for the FRI rounds, checking PoW per round. For each `(comm, witness)` from `(commit_phase_commits, commit_pow_witnesses)`:
+  - Absorb `comm` into the transcript
+  - Check whether a given witness satisfies the PoW condition. After absorbing the witness, the challenger samples bits random bits and verifies that all bits sampled are zero. The sample method returns the next challenge value from a hash-based transcript. The hash challenger keeps an `output_buffer` of already-derived values: if that buffer is empty, it calls `flush()` to hash the current transcript input state and produces new output values; then removes and returns one element from the `output_buffer`. It's a configurable proof-of-work mechanism that intentionally makes proof generation harder, while keeping verification cheap. By requiring a PoW witness there, the protocol makes it harder for the prover to repeatedly reshuffle the transcript until it gets "nice" query positions or favorable randomness.
 
 - Verify each `query_proof` in `proof.query_proofs`:
   - Generate a random index by sampling bits from the challenger
@@ -142,12 +146,11 @@ CirclePcs and TwoAdicFriPcs are both Polynomial Commitment Schemes (PCS) built o
       - Compute `batch_heights` where each height is the domain size multiplied by the blowup factor
       - Create `batch_dims` Dimensions for MMCS verification where `width = 0` is just a placeholder here.
       - `reduced_index`: If a batch has a smaller domain than the global query domain, the same logical query index must be shifted down. If the batch is empty, it uses 0. It maps an index from a larger tree into a smaller subtree.
-      - `verify_batch`: This function verifies a batched Merkle opening for several matrix rows against a Merkle cap commitment. The prover claims: "these are the rows from these matrices at index, and here is the proof". The verifier:
+      - `verify_batch` (Details see below): This function verifies a batched Merkle opening for several matrix rows against a Merkle cap commitment. The prover claims: "these are the rows from these matrices at index, and here is the proof". The verifier:
         - checks the rows/proof have the right shape,
         - recomputes the leaf hash for the opened rows,
         - walks up the Merkle tree using the proof,
         - checks that the final digest matches one of the values in the committed cap.
-      - Details see below.
 
 - **Reduced Opening Computation for FRI**: multiple polynomials, each claimed to evaluate to certain values at certain points, are reduced into a single "reduced opening" polynomial per height. This avoids running FRI separately for each one.
   - Computing the evaluation point `x = g * ω^i` where `g` is the base field generator and `ω` is the appropriate root of unity (generator for the multiplicative group of order `2^log_height`).
@@ -193,8 +196,6 @@ CirclePcs and TwoAdicFriPcs are both Polynomial Commitment Schemes (PCS) built o
   - Build the constraint folder: It holds all the evaluation context (trace values, selectors, public inputs) and an accumulator that will collect the random linear combination of all constraint evaluations, weighted by powers of alpha.
   - Evaluate all constraints: Runs the AIR's constraint logic against the folder. Each constraint contributes to `folder.accumulator` via the alpha folding — this compresses all constraints into a single field element: `accumulator = c_0 + α·c_1 + α²·c_2 + ...`
   - Final check: Multiplies the folded constraints by `1/Z_H(ζ)` and checks equality with the prover's claimed `quotient(ζ)`. If they don't match, the proof is rejected.
-
----
 
 ### verify_batch
 

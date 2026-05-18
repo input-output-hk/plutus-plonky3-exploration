@@ -73,6 +73,12 @@ pub fn sub(a: Ext2, b: Ext2) -> Ext2 {
   Ext2 { c0: f.sub(a.c0, b.c0), c1: f.sub(a.c1, b.c1) }
 }
 
+/// Subtract a base-field element from an extension element.
+/// Cheaper than sub(a, from_base(b)): only one field subtraction, c1 passes through.
+pub fn sub_base(a: Ext2, b: Int) -> Ext2 {
+  Ext2 { c0: f.sub(a.c0, b), c1: a.c1 }
+}
+
 /// Multiply extension element by a Goldilocks base-field scalar.
 pub fn scale(a: Ext2, s: Int) -> Ext2 {
   Ext2 { c0: f.mul(a.c0, s), c1: f.mul(a.c1, s) }
@@ -191,17 +197,20 @@ fn do_fold(cs: List<Ext2>, alpha: Ext2, acc: Ext2) -> Ext2 {
 ///
 /// Mirrors `recompose_quotient_from_chunks` (uni-stark/src/verifier.rs):
 ///   zp_i = Π_{j≠i} [Z_{H_j}(zeta) * Z_{H_j}(first_i)^{-1}]
-///   quotient = Σ_i zp_i * chunk_as_ext2(chunk_i)
+///   quotient = Σ_i zp_i * (Σ_e basis(e) * chunk_i[e])
 ///
 /// Arguments:
 ///   vps_at_zeta   – [Z_{H_i}(zeta)] for each chunk domain i
 ///   vps_at_firsts – Z_{H_j}(first_i) for each pair, row-major [i*n+j]
-///   chunks        – quotient_chunks, each a list of 2 base-field coefficients
+///   chunks        – quotient_chunks: each chunk is a List<Ext2> of length DIMENSION.
+///                   chunk_i[e] = Q_e(zeta) ∈ Ext2, the OOD evaluation of the e-th
+///                   base-field sub-polynomial of chunk i.
+///                   Mirrors Vec<Vec<SC::Challenge>> where inner len = DIMENSION.
 ///   num_chunks    – number of chunks
 pub fn recompose_quotient(
   vps_at_zeta: List<Ext2>,
   vps_at_firsts: List<Ext2>,
-  chunks: List<List<Int>>,
+  chunks: List<List<Ext2>>,
   num_chunks: Int,
 ) -> Option<Ext2> {
   when compute_zps(vps_at_zeta, vps_at_firsts, num_chunks, 0, []) is {
@@ -271,7 +280,7 @@ fn do_zp_i(
   }
 }
 
-fn zip_mul_chunk(zps: List<Ext2>, chunks: List<List<Int>>) -> List<Ext2> {
+fn zip_mul_chunk(zps: List<Ext2>, chunks: List<List<Ext2>>) -> List<Ext2> {
   when zps is {
     [] -> []
     [zp, ..rest_zps] ->
@@ -283,10 +292,13 @@ fn zip_mul_chunk(zps: List<Ext2>, chunks: List<List<Int>>) -> List<Ext2> {
   }
 }
 
-fn chunk_to_ext(coeffs: List<Int>, i: Int) -> Ext2 {
-  when coeffs is {
+/// Sum of basis(i) * ch[i] for each element ch[i] : Ext2.
+/// Mirrors: sum_i SC::Challenge::ith_basis_element(i) * chunk[i]
+/// where chunk[i] is already a Challenge (Ext2) value.
+fn chunk_to_ext(ch: List<Ext2>, i: Int) -> Ext2 {
+  when ch is {
     [] -> zero
-    [c, ..rest] -> add(scale(basis(i), c), chunk_to_ext(rest, i + 1))
+    [e, ..rest] -> add(mul(basis(i), e), chunk_to_ext(rest, i + 1))
   }
 }
 

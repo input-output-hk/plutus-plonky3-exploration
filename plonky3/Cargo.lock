@@ -707,6 +707,7 @@ dependencies = [
  "p3-uni-stark",
  "postcard",
  "rand",
+ "serde_json",
  "tracing-subscriber",
 ]
 

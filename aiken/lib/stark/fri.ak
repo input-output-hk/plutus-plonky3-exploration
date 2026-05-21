@@ -1,3 +1,4 @@
+use aiken/primitive/string
 use goldilocks/ext2.{Ext2}
 use goldilocks/field as gf
 use stark/mmcs
@@ -64,14 +65,15 @@ fn do_reverse_bits(n: Int, remaining: Int, acc: Int) -> Int {
 ///   parent_index      – index in the FOLDED domain (after >>= 1).
 ///   log_folded_height – log2 of the folded domain size.
 ///   beta              – FRI folding challenge (Ext2).
-///   e0                – evaluation at the NEGATIVE point -x.
-///   e1                – evaluation at the POSITIVE point +x.
+///   e0                – evaluation at the POSITIVE point +x  (even storage index, position 0).
+///   e1                – evaluation at the NEGATIVE point -x  (odd storage index, position 1).
 ///
 /// The evaluation point x is:
 ///   x = two_adic_generator(log_folded_height + 1)^reverse_bits_len(parent_index, log_folded_height)
 ///
-/// Fold formula (Lagrange interpolation at beta through (-x, e0) and (x, e1)):
-///   result = (e0 + e1) / 2  +  beta * (e1 - e0) / (2 * x)
+/// Plonky3 builds xs = [+x, -x] (shifted_powers then reverse_slice_index_bits, a no-op for arity=2),
+/// so Lagrange interpolation through (+x, e0) and (-x, e1) gives:
+///   result = (e0 + e1) / 2  +  beta * (e0 - e1) / (2 * x)
 ///
 /// x is a power of a generator so it is never zero; the inverse always exists.
 pub fn fold_row(
@@ -96,7 +98,7 @@ pub fn fold_row(
   // inv_2x = (2x)^{-1} = half * x^{-1}
   let inv_2x = gf.mul(half, inv_x)
   let sum_half = ext2.scale(ext2.add(e0, e1), half)
-  let diff_scaled = ext2.scale(ext2.sub(e1, e0), inv_2x)
+  let diff_scaled = ext2.scale(ext2.sub(e0, e1), inv_2x)
   ext2.add(sum_half, ext2.mul(beta, diff_scaled))
 }
 
@@ -304,8 +306,8 @@ test fold_beta_zero_sym_average() {
 test fold_symmetry() {
   // Swapping e0 ↔ e1 and negating beta gives the same result.
   // fold(-beta, e1, e0) should equal fold(beta, e0, e1)
-  // because (e1+e0)/2 + (-beta)*(e0-e1)/(2x)
-  //        = (e0+e1)/2 + beta*(e1-e0)/(2x) = fold(beta, e0, e1)
+  // because (e1+e0)/2 + (-beta)*(e1-e0)/(2x)
+  //        = (e0+e1)/2 + beta*(e0-e1)/(2x) = fold(beta, e0, e1)
   let e0 = Ext2 { c0: 100, c1: 50 }
   let e1 = Ext2 { c0: 200, c1: 150 }
   let beta = Ext2 { c0: 3, c1: 7 }
@@ -424,10 +426,34 @@ pub fn verify_query(
   steps: List<CommitPhaseStep<Ext2>>,
   folded_eval: Ext2,
 ) -> Option<(Ext2, Int)> {
+  do_verify_query(
+    index,
+    log_current_height,
+    betas,
+    commits,
+    steps,
+    folded_eval,
+    0,
+  )
+}
+
+fn do_verify_query(
+  index: Int,
+  log_current_height: Int,
+  betas: List<Ext2>,
+  commits: List<ByteArray>,
+  steps: List<CommitPhaseStep<Ext2>>,
+  folded_eval: Ext2,
+  round: Int,
+) -> Option<(Ext2, Int)> {
   when (betas, commits, steps) is {
     // Base case: all rounds consumed — verify we landed at the expected final height.
     ([], [], []) ->
       if log_current_height != params.log_final_height {
+        trace string.concat(
+          @"FAIL: verify_query height mismatch at end, log_current_height=",
+          string.from_int(log_current_height),
+        )
         None
       } else {
         Some((folded_eval, index))
@@ -437,7 +463,10 @@ pub fn verify_query(
       when step.sibling_values is {
         [sibling] ->
           if step.log_arity != 1 {
-            // log_arity != 1 — only binary folding is supported.
+            trace string.concat(
+              @"FAIL: verify_query wrong log_arity=",
+              string.from_int(step.log_arity),
+            )
             None
           } else {
             // Reconstruct [e0, e1]: evals[index % 2] = folded_eval, other = sibling.
@@ -460,25 +489,39 @@ pub fn verify_query(
                 step.opening_proof,
               )
             if !ok {
+              trace string.concat(
+                @"FAIL: verify_query Merkle at round=",
+                string.from_int(round),
+              )
               None
             } else {
               let next_eval =
                 fold_row(parent_index, log_folded_height, beta, e0, e1)
-              verify_query(
+              do_verify_query(
                 parent_index,
                 log_folded_height,
                 rest_betas,
                 rest_commits,
                 rest_steps,
                 next_eval,
+                round + 1,
               )
             }
           }
         // Wrong sibling count — only binary folding (1 sibling) is supported.
-        _ -> None
+        _ -> {
+          trace string.concat(
+            @"FAIL: verify_query wrong sibling count at round=",
+            string.from_int(round),
+          )
+          None
+        }
       }
     // Mismatched list lengths — invalid proof shape.
-    _ -> None
+    _ -> {
+      trace @"FAIL: verify_query mismatched list lengths"
+      None
+    }
   }
 }
 

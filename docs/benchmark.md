@@ -62,6 +62,13 @@ Plonky3 verification
 
 ### Fri + TwoAdicFriPcs:
 
+```
+Full verifier:
+    ┍━ stark/goldilocks_proof_test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │ PASS [mem: 726.80 M, cpu: 238.02 B] stark_verify_goldilocks_real_proof
+    ┕━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1 tests | 1 passed | 0 failed
+```
+
 Babybear/KoalaBear:
 
 - `SHA256 calls on 512 bit = 13429`

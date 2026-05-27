@@ -395,8 +395,10 @@ test open_input_empty_opened_values_returns_none() {
 /// specialised for binary folding (log_arity = 1 every round).
 ///
 /// For the Fibonacci STARK, the chain has 13 rounds (degree_bits = 13,
-/// log_blowup = 1, log_final_poly_len = 0 → log_global_max_height = 14,
-/// log_final_height = 1).  There is only one batch of reduced openings, all
+/// log_final_poly_len = 0; num_rounds = degree_bits − log_final_poly_len = 13).
+///   log_blowup=1 → log_global_max_height=14, log_final_height=1
+///   log_blowup=2 → log_global_max_height=15, log_final_height=2
+/// There is only one batch of reduced openings, all
 /// at log_global_max_height, so no "roll-in" step occurs mid-chain.
 ///
 /// Arguments:
@@ -572,15 +574,18 @@ test verify_query_one_round_valid() {
   // index = 0, index_in_group = 0 → e0 = init_eval, e1 = sibling.
   // Empty Merkle path: root = hash_leaf([e0.c0, e0.c1, e1.c0, e1.c1]).
   // beta = zero → fold = (e0 + e1) / 2 = ((1,0) + (0,0)) / 2 = (half, 0).
+  //
+  // Start at log_final_height+1 so one fold lands at log_final_height.
+  // x = g_{log_final_height+1}^{rbl(parent_index=0, log_final_height)} = g^0 = 1
+  // regardless of log_blowup, so the expected value is always (half, 0).
+  let start_height = params.log_final_height + 1
   let e0 = Ext2 { c0: 1, c1: 0 }
   let e1 = Ext2 { c0: 0, c1: 0 }
-  // Start at height 2 so one fold (log_arity=1) lands at log_final_height=1.
-  // parent_index = 0, log_folded_height = 2 - 1 = 1
   let root = mmcs.hash_leaf([1, 0, 0, 0])
   let expected = Ext2 { c0: half, c1: 0 }
   let step =
     CommitPhaseStep { log_arity: 1, sibling_values: [e1], opening_proof: [] }
-  when verify_query(0, 2, [ext2.zero], [root], [step], e0) is {
+  when verify_query(0, start_height, [ext2.zero], [root], [step], e0) is {
     Some((result, final_idx)) ->
       ext2.eq_fast(result, expected) && final_idx == 0
     None -> False
@@ -590,13 +595,15 @@ test verify_query_one_round_valid() {
 test verify_query_one_round_odd_index() {
   // index = 1, index_in_group = 1 → e0 = sibling, e1 = init_eval.
   // Empty Merkle path: root = hash_leaf([sibling.c0, sibling.c1, init.c0, init.c1]).
-  // beta = zero → fold = (e0 + e1) / 2 = sibling = (2, 0), init = (4, 0) → avg = (3, 0)
+  // beta = zero → fold = (e0 + e1) / 2 = sibling=(2,0), init=(4,0) → avg=(3,0).
+  //
+  // x = g_{log_final_height+1}^{rbl(parent_index=0, log_final_height)} = g^0 = 1
+  // regardless of log_blowup, so the expected value is always (3, 0).
+  let start_height = params.log_final_height + 1
   let sibling_eval = Ext2 { c0: 2, c1: 0 }
   let init_eval = Ext2 { c0: 4, c1: 0 }
-  // e0 = sibling_eval, e1 = init_eval; start at height 2 → fold lands at log_final_height=1.
   let root = mmcs.hash_leaf([2, 0, 4, 0])
-  // avg = (2+4)/2 = 3, in field: 6 * half = 3
-  // 6 * half mod p: half = (p+1)/2, 6*(p+1)/2 = 3*(p+1) = 3p+3 ≡ 3 (mod p)
+  // avg = (2+4)/2 = 3
   let expected = Ext2 { c0: 3, c1: 0 }
   let step =
     CommitPhaseStep {
@@ -604,8 +611,9 @@ test verify_query_one_round_odd_index() {
       sibling_values: [sibling_eval],
       opening_proof: [],
     }
-  // Start at height 2 so one fold (log_arity=1) lands at log_final_height=1.
-  when verify_query(1, 2, [ext2.zero], [root], [step], init_eval) is {
+  when
+    verify_query(1, start_height, [ext2.zero], [root], [step], init_eval)
+  is {
     Some((result, final_idx)) ->
       ext2.eq_fast(result, expected) && final_idx == 0
     None -> False

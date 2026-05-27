@@ -213,7 +213,7 @@ fn run_goldilocks() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters {
-        log_blowup: 1,
+        log_blowup: 2,
         log_final_poly_len: 0,
         max_log_arity: 1,
         num_queries: 100,

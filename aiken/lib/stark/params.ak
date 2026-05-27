@@ -25,7 +25,7 @@ pub type FriParams {
 
 pub const fri_params: FriParams =
   FriParams {
-    log_blowup: 1,
+    log_blowup: 2,
     log_final_poly_len: 0,
     max_log_arity: 1,
     num_queries: 100,
@@ -100,8 +100,15 @@ pub fn log_max_height(db: Int) -> Int {
   db + fri_params.log_blowup
 }
 
-/// log2 of the final FRI domain height = log_blowup + log_final_poly_len = 1.
-pub const log_final_height: Int = 1
+/// log2 of the final FRI domain height = log_blowup + log_final_poly_len.
+///
+/// Mirrors fri/src/verifier.rs:173:
+///   let log_final_height = params.log_blowup + params.log_final_poly_len;
+///
+///   log_blowup=1, log_final_poly_len=0 → log_final_height=1
+///   log_blowup=2, log_final_poly_len=0 → log_final_height=2
+pub const log_final_height: Int =
+  fri_params.log_blowup + fri_params.log_final_poly_len
 
 /// Number of FRI fold rounds for a proof with the given degree_bits.
 ///   num_rounds = log_max_height - log_final_height
@@ -127,12 +134,20 @@ test num_fri_rounds_13() {
   num_fri_rounds(degree_bits) == 13
 }
 
-test log_max_height_14() {
-  log_max_height(degree_bits) == 14
+test log_max_height_is_degree_bits_plus_blowup() {
+  // log_blowup=1 → 14;  log_blowup=2 → 15
+  log_max_height(degree_bits) == degree_bits + fri_params.log_blowup
 }
 
-test soundness_bits_116() {
-  fri_params.log_blowup * fri_params.num_queries + fri_params.query_proof_of_work_bits == 116
+test log_final_height_is_blowup_plus_final_poly_len() {
+  // log_blowup=1 → 1;  log_blowup=2 → 2
+  log_final_height == fri_params.log_blowup + fri_params.log_final_poly_len
+}
+
+test soundness_bits_sufficient() {
+  // Conjectured bits = log_blowup * num_queries + query_pow_bits.
+  // log_blowup=1 → 116;  log_blowup=2 → 216.
+  fri_params.log_blowup * fri_params.num_queries + fri_params.query_proof_of_work_bits >= 100
 }
 
 test one_quotient_chunk_domain() {

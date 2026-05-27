@@ -4,7 +4,7 @@
 
 Production-like parameters
 
-```rust
+```
 FriParameters {
     log_blowup: 1,
     log_final_poly_len: 0,
@@ -14,13 +14,16 @@ FriParameters {
     query_proof_of_work_bits: 16,
     mmcs,
 }
+
+- Conjectured soundness bits 116
+- Johnson bound 50-bit (without PoW)
 ```
 
 `Conjectured soundness bits = log_blowup * num_queries + query_proof_of_work_bits`
 
 ### Babybear with sha256
 
-- Conjectured soundness bits 116
+- `log_blowup = 1`
 - Proving time = 27.419676ms
 - quotient_chunks len = 4
 - Proof size 2adic: 414607 bytes for n = 8192
@@ -29,7 +32,7 @@ FriParameters {
 
 ### KoalaBear with sha256
 
-- Conjectured soundness bits 116
+- `log_blowup = 1`
 - Proving time = 22.963627ms
 - quotient_chunks len = 4
 - Proof size 2adic: 414493 bytes for n = 8192
@@ -38,7 +41,7 @@ FriParameters {
 
 ### Goldilocks with sha256
 
-- Conjectured soundness bits 116
+- `log_blowup = 1`
 - Proving time = 27.009029ms
 - quotient_chunks len = 2
 - Proof size 2adic: 414633 bytes for n = 8192
@@ -47,12 +50,36 @@ FriParameters {
 
 ### CircleStark with sha256
 
-- Circle conjectured soundness bits 116
+- `log_blowup = 1`
 - Proving time = 52.098038ms
 - quotient_chunks len = 3
 - Proof size: 458782 bytes for n = 8192
 - Proof degree bits: 13
 - Verifying time = 2.790042ms
+
+```
+FriParameters {
+    log_blowup: 2,
+    log_final_poly_len: 0,
+    max_log_arity: 1,
+    num_queries: 100,
+    commit_proof_of_work_bits: 0,
+    query_proof_of_work_bits: 16,
+    mmcs,
+}
+
+- Conjectured soundness bits 216
+- Johnson bound 100-bit (without PoW)
+```
+
+### Goldilocks with sha256
+
+- `log_blowup = 2`
+- Proving time = 51.468141ms
+- quotient_chunks len = 2
+- Proof size 2adic: 462706 bytes for n = 8192
+- Proof degree bits: 13
+- Verifying time = 3.036942ms
 
 ---
 
@@ -63,14 +90,26 @@ Plonky3 verification
 ### Fri + TwoAdicFriPcs:
 
 ```
+log_blowup = 1
+
 Full verifier:
     ┍━ stark/goldilocks_proof_test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     │ PASS [mem: 726.80 M, cpu: 238.02 B] stark_verify_goldilocks_real_proof
     ┕━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1 tests | 1 passed | 0 failed
 ```
 
+```
+log_blowup = 2
+
+Full verifier:
+┍━ stark/goldilocks_proof_test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │ PASS [mem: 768.05 M, cpu: 251.38 B] stark_verify_goldilocks_real_proof
+    ┕━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1 tests | 1 passed | 0 failed
+```
+
 Babybear/KoalaBear:
 
+- `log_blowup = 1`
 - `SHA256 calls on 512 bit = 13429`
 - `binomial extension add = 3509`
 - `binomial extension mul = 15418`
@@ -78,6 +117,7 @@ Babybear/KoalaBear:
 
 Goldilocks:
 
+- `log_blowup = 1`
 - `SHA256 calls on 512 bit = 13442`
 - `binomial extension add = 3307`
 - `binomial extension mul = 14816`
@@ -87,6 +127,7 @@ Goldilocks:
 
 Mersenne31:
 
+- `log_blowup = 1`
 - `SHA256 calls on 512 bit = 15230`
 - `binomial extension add = 5168`
 - `binomial extension sub = 2960`
@@ -96,12 +137,16 @@ Mersenne31:
 
 ### Hash 14,000 times on 512-bit input
 
+- `log_blowup = 1`
+
 |        | keccak_256 | sha2_256 | sha3_256 | blake2b_256 |
 | ------ | ---------- | -------- | -------- | ----------- |
 | memory | 40.82 M    | 40.82 M  | 40.82 M  | 40.82 M     |
 | cpu    | 48.51 B    | 15.94 B  | 37.25 B  | 13.37 B     |
 
 ### Bionomial extension field
+
+- `log_blowup = 1`
 
 |                 |              |  Memory   |   CPU    |
 | :-------------: | :----------: | :-------: | :------: |

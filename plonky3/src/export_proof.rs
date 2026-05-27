@@ -1,6 +1,6 @@
 /// Generate a Goldilocks Fibonacci STARK proof and dump it as JSON to stdout.
 ///
-/// Usage:  cargo run --bin export_proof > proof.json
+/// Usage: cargo run --release --bin export_proof proof.json
 ///
 /// The JSON is then fed to convert.py to produce the Aiken test literal.
 use std::fs;
@@ -95,7 +95,7 @@ fn main() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters {
-        log_blowup: 1,
+        log_blowup: 2,
         log_final_poly_len: 0,
         max_log_arity: 1,
         num_queries: 100,

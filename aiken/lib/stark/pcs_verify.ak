@@ -431,8 +431,12 @@ test extract_log_arities_from_steps() {
 }
 
 test log_global_max_height_from_arities() {
+  // 13 rounds of log_arity=1 give sum=13; adding log_blowup+log_final_poly_len
+  // yields log_global_max_height.
+  //   log_blowup=1 → 13 + 1 + 0 = 14
+  //   log_blowup=2 → 13 + 2 + 0 = 15
   let arities = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-  list_sum(arities) + params.fri_params.log_blowup + params.fri_params.log_final_poly_len == 14
+  list_sum(arities) + params.fri_params.log_blowup + params.fri_params.log_final_poly_len == params.degree_bits + params.fri_params.log_blowup + params.fri_params.log_final_poly_len
 }
 
 test observe_opened_values_clears_output() {

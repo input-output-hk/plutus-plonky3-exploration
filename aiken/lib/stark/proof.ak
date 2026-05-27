@@ -210,10 +210,6 @@ pub fn valid_opened_values_shape(
   list_len(ov.trace_local) == fib_trace_width && list_len(ov.trace_next) == fib_trace_width && list_len(
     ov.quotient_chunks,
   ) == num_quotient_chunks
-  // && list_all(
-  //    ov.quotient_chunks,
-  //    fn(ch) { list_len(ch) == ext_dim },
-  //  )
 }
 
 /// Check that a FriProof has the expected shape for a given number of FRI rounds

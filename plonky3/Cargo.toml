@@ -8,6 +8,10 @@ name = "fib"
 path = "src/fib_air.rs"
 
 [[bin]]
+name = "verify_proof"
+path = "src/verify_proof.rs"
+
+[[bin]]
 name = "export_proof"
 path = "src/export_proof.rs"
 

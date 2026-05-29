@@ -98,6 +98,21 @@ pub fn mul(a: Ext2, b: Ext2) -> Ext2 {
   }
 }
 
+/// Karatsuba extension × extension multiplication in F[X]/(X^2 - W), W = 7.
+///
+/// Uses 3 base-field multiplications instead of 4:
+///   m0 = a0·b0
+///   m1 = a1·b1
+///   m2 = (a0+a1)·(b0+b1)
+///   c0 = m0 + W·m1
+///   c1 = m2 - m0 - m1
+pub fn mul_karatsuba(a: Ext2, b: Ext2) -> Ext2 {
+  let m0 = f.mul(a.c0, b.c0)
+  let m1 = f.mul(a.c1, b.c1)
+  let m2 = f.mul(f.add(a.c0, a.c1), f.add(b.c0, b.c1))
+  Ext2 { c0: f.add(m0, f.mul(w, m1)), c1: f.sub(f.sub(m2, m0), m1) }
+}
+
 /// Multiplicative inverse in F[X]/(X^2 - W), W = 7.
 ///
 /// For a = a0 + a1·α, the norm is:
@@ -449,6 +464,33 @@ fn do_mul_loop(a: Ext2, b: Ext2, remaining: Int) -> Bool {
   } else {
     let c = mul(a, b)
     do_mul_loop(c, b, remaining - 1)
+  }
+}
+
+test mul_karatsuba_matches_mul() {
+  let a = Ext2 { c0: f.prime - 2, c1: 3 }
+  let b = Ext2 { c0: 12, c1: f.prime - 13 }
+  eq_fast(mul_karatsuba(a, b), mul(a, b))
+}
+
+test mul_karatsuba_matches_mul_explicit() {
+  // (1 + α)(1 + α) = 8 + 2α  (same as mul_explicit test)
+  let a = Ext2 { c0: 1, c1: 1 }
+  eq_fast(mul_karatsuba(a, a), Ext2 { c0: 8, c1: 2 })
+}
+
+test mul_karatsuba_loop_100() {
+  let a = Ext2 { c0: f.prime - 2, c1: 3 }
+  let b = Ext2 { c0: 12, c1: f.prime - 13 }
+  do_mul_karatsuba_loop(a, b, 100)
+}
+
+fn do_mul_karatsuba_loop(a: Ext2, b: Ext2, remaining: Int) -> Bool {
+  if remaining == 0 {
+    True
+  } else {
+    let c = mul_karatsuba(a, b)
+    do_mul_karatsuba_loop(c, b, remaining - 1)
   }
 }
 

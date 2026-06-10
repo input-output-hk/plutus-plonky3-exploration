@@ -25,11 +25,11 @@ pub type FriParams {
 
 pub const fri_params: FriParams =
   FriParams {
-    log_blowup: 2,
+    log_blowup: 8,
     log_final_poly_len: 0,
     max_log_arity: 1,
-    num_queries: 100,
-    commit_proof_of_work_bits: 1,
+    num_queries: 22,
+    commit_proof_of_work_bits: 16,
     query_proof_of_work_bits: 16,
   }
 

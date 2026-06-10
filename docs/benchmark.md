@@ -16,46 +16,20 @@ FriParameters {
 }
 
 - Conjectured soundness bits 116
-- Johnson bound 50-bit (without PoW)
+- Johnson bound ~50-bit (without PoW)
 ```
 
 `Conjectured soundness bits = log_blowup * num_queries + query_proof_of_work_bits`
 
-### Babybear with sha256
-
-- `log_blowup = 1`
-- Proving time = 27.419676ms
-- quotient_chunks len = 4
-- Proof size 2adic: 414607 bytes for n = 8192
-- Proof degree bits: 13
-- Verifying time = 2.618049ms
-
-### KoalaBear with sha256
-
-- `log_blowup = 1`
-- Proving time = 22.963627ms
-- quotient_chunks len = 4
-- Proof size 2adic: 414493 bytes for n = 8192
-- Proof degree bits: 13
-- Verifying time = 2.552546ms
-
-### Goldilocks with sha256
-
-- `log_blowup = 1`
-- Proving time = 27.009029ms
-- quotient_chunks len = 2
-- Proof size 2adic: 414633 bytes for n = 8192
-- Proof degree bits: 13
-- Verifying time = 2.802918ms
-
-### CircleStark with sha256
-
-- `log_blowup = 1`
-- Proving time = 52.098038ms
-- quotient_chunks len = 3
-- Proof size: 458782 bytes for n = 8192
-- Proof degree bits: 13
-- Verifying time = 2.790042ms
+|                     | BabyBear  | KoalaBear | Goldilocks | CircleStark |
+| ------------------- | --------- | --------- | ---------- | ----------- |
+| log_blowup          | 1         | 1         | 1          | 1           |
+| Proof degree bits   | 13        | 13        | 13         | 13          |
+| n                   | 8192      | 8192      | 8192       | 8192        |
+| quotient_chunks len | 4         | 4         | 2          | 3           |
+| Proving time (ms)   | 27.419676 | 22.963627 | 27.009029  | 52.098038   |
+| Verifying time (ms) | 2.618049  | 2.552546  | 2.802918   | 2.790042    |
+| Proof size (bytes)  | 414607    | 414493    | 414633     | 458782      |
 
 ```
 FriParameters {
@@ -69,7 +43,7 @@ FriParameters {
 }
 
 - Conjectured soundness bits 216
-- Johnson bound 100-bit (without PoW)
+- Johnson bound ~100-bit (without PoW)
 ```
 
 ### Goldilocks with sha256
@@ -168,6 +142,63 @@ Mersenne31:
 |                 | square_2150  |  57.50 M  | 18.18 B  |
 |                 | inverse_610  |  52.14 M  | 16.24 B  |
 |                 | -- total --  | 533.98 M  | 174.23 B |
+
+---
+
+## Proven soundness
+
+The formula for computing the number of queries needed to reach a security target is
+`num_queries = ceil( −(security − query_pow) / log₂(1 − δ) )`. Plonky3 only evaluates this for
+conjectured soundness, not for proven soundness (e.g. the Johnson bound), where
+`δ = 1 − √ρ − η`, `ρ = 1/2^{log_blowup}`, and η is a small correction factor. A smaller η
+yields a lower `num_queries`, so we want the smallest η that still meets the security target.
+leanMultisig provides an algorithm that finds this optimal `η = √ρ / 2^log_c` for
+sumcheck + KoalaBear⁵; we adapted it by stripping out the sumcheck-specific calculation so it
+applies generically.
+
+Selecting η also requires checking that the commit-phase soundness, calculated by
+`extension_field_size − errors`, reaches the security target. This bound is independent
+of `num_queries` and decreases as `log_blowup` grows, so beyond some point the security target becomes
+unreachable no matter how many queries are used. Concretely, the calculation puts 128-bit
+Goldilocks² at ~89 bits of commit-phase soundness and 124-bit KoalaBear⁴ at ~85 bits.
+To reach ~100-bit security we can recover the missing bits by grinding `commit_pow` - this slows the prover but
+lets us keep Goldilocks². Reaching ~120-bit security instead requires a larger extension
+field - Goldilocks³ or KoalaBear⁵ - which increases the on-chain CPU and memory costs.
+
+### 100-bit security
+
+query_pow = 16, commit_pow = 16, Goldilocks², Fibonacci circuit n = 2¹³ = 8192
+
+| log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
+| ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
+| 2          | 86          | 161.07705ms  | 397983             | 2.610589ms     | 660.52 M   | 216.22 B   |
+| 4          | 43          | 304.008673ms | 240638             | 1.575957ms     | 372.90 M   | 121.99 B   |
+| 8          | 22          | 2.397145461s | 165661             | 1.168463ms     | 232.06 M   | 75.89 B    |
+| 16         | unreachable | —            | —                  | —              | —          | —          |
+
+### 105-bit security
+
+query_pow = 16, commit_pow = 16, Goldilocks², Fibonacci circuit n = 2¹³ = 8192
+
+| log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
+| ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
+| 2          | 93          | 162.101287ms | 430328             | 2.819012ms     | 713.22 M   | 233.46 B   |
+| 4          | 47          | 307.952548ms | 285277             | 1.691252ms     | 405.42 M   | 132.64 B   |
+| 8          | unreachable | —            | —                  | —              | —          | —          |
+
+Goldilocks has `two_adicity = 32`. The FRI/LDE evaluation domain must be a two-adic
+multiplicative coset, so its size `2^(log_n + log_blowup)` is bounded by the field's
+two-adicity: `log_n + log_blowup ≤ 32`, where `log_n` is the log₂ of the trace height.
+For example, `log_blowup = 8` caps the trace at `log_n = 24`.
+Moreover, as mentioned above, a larger `log_blowup` lowers the commit-phase soundness, so beyond some point the
+target is unreachable regardless of `num_queries`. That is why `log_blowup = 16` cannot
+reach 100-bit security, and `log_blowup = 8` cannot reach 105-bit.
+
+The on-chain `stark_verifier` contract already supports any `log_blowup` and `num_queries`; they
+just need to be set in `params.ak` before calling the verifier. At 100-bit security with
+`log_blowup = 8` and `num_queries = 22`, the proof is 165,661 bytes and contains 22 query
+proofs. We expect to verify each query proof in a single transaction, and thus the full proof
+in ~25 transactions.
 
 ---
 

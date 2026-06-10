@@ -17,7 +17,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_sha256::Sha256;
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
-use p3_uni_stark::{StarkConfig, prove};
+use p3_uni_stark::{StarkConfig, prove, verify};
 
 // ── Fibonacci AIR (duplicated from fib_air.rs to keep this binary self-contained) ──
 
@@ -95,11 +95,11 @@ fn main() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters {
-        log_blowup: 2,
+        log_blowup: 8,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 100,
-        commit_proof_of_work_bits: 1,
+        num_queries: 22,
+        commit_proof_of_work_bits: 16,
         query_proof_of_work_bits: 16,
         mmcs: challenge_mmcs,
     };
@@ -115,7 +115,26 @@ fn main() {
         .unwrap_or_else(|| "proof.json".to_string());
 
     eprintln!("Generating proof...");
+    let start = std::time::Instant::now();
     let proof = prove(&config, &FibonacciAir {}, trace, &pis);
+    let elapsed = start.elapsed();
+    println!("Proving time = {:?}", elapsed);
+
+    let start = std::time::Instant::now();
+    verify(&config, &FibonacciAir {}, &proof, &pis).expect("verification failed");
+    let elapsed = start.elapsed();
+    println!("Verifying time = {:?}", elapsed);
+
+    {
+        let proof_bytes = postcard::to_allocvec(&proof).expect("Failed to serialize proof");
+        println!(
+            "Proof size 2adic: {} bytes for n = {:?}",
+            proof_bytes.len(),
+            n
+        );
+        println!("Proof degree bits: {}", proof.degree_bits);
+    }
+
     eprintln!("Done. Serializing to JSON...");
 
     let json = serde_json::to_string(&proof).expect("JSON serialization failed");

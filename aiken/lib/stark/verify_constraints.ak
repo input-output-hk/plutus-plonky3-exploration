@@ -1,6 +1,6 @@
 use goldilocks/ext2.{Ext2}
 use goldilocks/field as gf
-use stark/proof.{FibPublicInputs, OpenedValues}
+use stark/proof.{FibPublicInputs, InstanceOpenedValues, OpenedValues}
 
 // ── Public verifier ────────────────────────────────────────────────────────────
 
@@ -121,6 +121,118 @@ pub fn verify_constraints(
   }
 }
 
+// ── Batch constraint verifier (multi-AIR) ─────────────────────────────────────
+
+/// Per-instance constraint verification for the batch proof
+/// (batch-stark/src/verifier.rs:431-547 → verify_constraints_with_lookups,
+/// verifier.rs:598-673, with empty lookups: the folder reduces to the plain
+/// uni-stark VerifierConstraintFolder).
+///
+/// Hard-specialised to the export_batch_proof.rs instance list:
+///   [0] MulAir (reps = 2, width 7, no public values)
+///   [1] FibonacciAir (width 2, public values [a, b, x])
+///
+/// Both instances share zeta and alpha (sampled once for the whole batch) and
+/// the same trace domain size (degree_bits = 10 for both), so the selector
+/// computations coincide; they are still evaluated per instance, mirroring
+/// upstream.
+pub fn verify_constraints_batch(
+  instances: List<InstanceOpenedValues<Ext2>>,
+  public_values: List<List<Int>>,
+  zeta: Ext2,
+  alpha: Ext2,
+  degree_bits: Int,
+) -> Bool {
+  when (instances, public_values) is {
+    ([mul_ov, fib_ov], [[], [a, b, x]]) -> {
+      let mul_ok = verify_mul_constraints(mul_ov, zeta, alpha, degree_bits)
+      trace if mul_ok {
+        @"mul constraints ok"
+      } else {
+        @"FAIL: MulAir constraints"
+      }
+      // FibonacciAir: identical constraint set to the uni-stark verifier.
+      let fib_ok =
+        verify_constraints(
+          OpenedValues {
+            trace_local: fib_ov.trace_local,
+            trace_next: fib_ov.trace_next,
+            quotient_chunks: fib_ov.quotient_chunks,
+          },
+          FibPublicInputs { a, b, x },
+          zeta,
+          alpha,
+          degree_bits,
+        )
+      trace if fib_ok {
+        @"fib constraints ok"
+      } else {
+        @"FAIL: FibonacciAir constraints"
+      }
+      mul_ok && fib_ok
+    }
+    _ -> False
+  }
+}
+
+/// MulAir constraints (plonky3/src/export_batch_proof.rs, eval order), at zeta.
+///
+/// Columns (width 7, reps = 2): [a0, b0, c0, a1, b1, c1, lut] where lut is the
+/// permutation column for local lookups — unconstrained while lookups are off.
+///
+/// Constraints, in eval order (s = 3·rep):
+///   assert_eq(a·b, c)                          →  tl[s]·tl[s+1] − tl[s+2]
+///   when_transition: assert_eq(b, next[s])     →  is_transition·(tl[s+1] − tn[s])
+///   when_transition: assert_eq(a+b, next[s+1]) →  is_transition·(tl[s] + tl[s+1] − tn[s+1])
+///
+/// folded = c0·α^5 + c1·α^4 + ... + c5 (Horner, same as fold_constraints).
+fn verify_mul_constraints(
+  ov: InstanceOpenedValues<Ext2>,
+  zeta: Ext2,
+  alpha: Ext2,
+  degree_bits: Int,
+) -> Bool {
+  let z_h = ext2.vanishing_poly(zeta, degree_bits)
+  let g = gf.two_adic_generator(degree_bits)
+  when gf.inverse(g) is {
+    None -> False
+    Some(g_inv) -> {
+      // MulAir has no first/last-row constraints; only is_transition and the
+      // vanishing inverse are needed.
+      let is_transition = ext2.sub_base(zeta, g_inv)
+      when ext2.inverse(z_h) is {
+        None -> False
+        Some(inv_zh) ->
+          when (ov.trace_local, ov.trace_next, ov.quotient_chunks) is {
+            (
+              [l0, l1, l2, l3, l4, l5, _lut],
+              [n0, n1, _n2, n3, n4, _n5, _nlut],
+              [chunk],
+            ) -> {
+              // rep 0
+              let c0 = ext2.sub(ext2.mul(l0, l1), l2)
+              let c1 = ext2.mul(is_transition, ext2.sub(l1, n0))
+              let c2 = ext2.mul(is_transition, ext2.sub(ext2.add(l0, l1), n1))
+              // rep 1
+              let c3 = ext2.sub(ext2.mul(l3, l4), l5)
+              let c4 = ext2.mul(is_transition, ext2.sub(l4, n3))
+              let c5 = ext2.mul(is_transition, ext2.sub(ext2.add(l3, l4), n4))
+
+              let folded =
+                ext2.fold_constraints([c0, c1, c2, c3, c4, c5], alpha)
+              when recompose_one_chunk(chunk) is {
+                None -> False
+                Some(quotient) ->
+                  ext2.eq_fast(ext2.mul(folded, inv_zh), quotient)
+              }
+            }
+            _ -> False
+          }
+      }
+    }
+  }
+}
+
 // ── Quotient recomposition ─────────────────────────────────────────────────────
 
 /// Reconstruct quotient(zeta) from a single chunk of DIMENSION=2 evaluations.
@@ -195,6 +307,59 @@ test is_first_row_at_one() {
   let pis = FibPublicInputs { a: 0, b: 1, x: 1 }
   // zeta = 1 means zeta_minus_1 = 0 → inverse fails → False
   !verify_constraints(ov, pis, zeta_one, ext2.one, 13)
+}
+
+test verify_constraints_batch_trivial_zero_traces() {
+  // All-zero traces satisfy every constraint of both AIRs with zero quotient
+  // (0·0−0 = 0; transitions 0; Fib pis all 0), at an OOD zeta = (2, 0).
+  let zeta = Ext2 { c0: 2, c1: 0 }
+  let zero7 =
+    [
+      ext2.zero,
+      ext2.zero,
+      ext2.zero,
+      ext2.zero,
+      ext2.zero,
+      ext2.zero,
+      ext2.zero,
+    ]
+  let mul_ov =
+    InstanceOpenedValues {
+      trace_local: zero7,
+      trace_next: zero7,
+      quotient_chunks: [[ext2.zero, ext2.zero]],
+    }
+  let fib_ov =
+    InstanceOpenedValues {
+      trace_local: [ext2.zero, ext2.zero],
+      trace_next: [ext2.zero, ext2.zero],
+      quotient_chunks: [[ext2.zero, ext2.zero]],
+    }
+  verify_constraints_batch(
+    [mul_ov, fib_ov],
+    [[], [0, 0, 0]],
+    zeta,
+    ext2.one,
+    10,
+  )
+}
+
+test verify_constraints_batch_wrong_pv_shape_fails() {
+  // MulAir must have an empty public-value list.
+  let zeta = Ext2 { c0: 2, c1: 0 }
+  let fib_ov =
+    InstanceOpenedValues {
+      trace_local: [ext2.zero, ext2.zero],
+      trace_next: [ext2.zero, ext2.zero],
+      quotient_chunks: [[ext2.zero, ext2.zero]],
+    }
+  !verify_constraints_batch(
+    [fib_ov, fib_ov],
+    [[1], [0, 0, 0]],
+    zeta,
+    ext2.one,
+    10,
+  )
 }
 
 test verify_constraints_trivial_zero_trace() {

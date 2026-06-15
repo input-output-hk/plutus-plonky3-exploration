@@ -19,6 +19,10 @@ path = "src/export_proof.rs"
 name = "fib_batch"
 path = "src/fib_batch.rs"
 
+[[bin]]
+name = "export_batch_proof"
+path = "src/export_batch_proof.rs"
+
 
 [dependencies]
 rand = "0.10.1"

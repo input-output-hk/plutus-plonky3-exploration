@@ -40,6 +40,10 @@ pub type MerklePath =
 ///   Quotient batch: 2 chunk-domain matrices, 2 values each (DIMENSION = 2)
 ///                  → opened_values = [[qc0_c0, qc0_c1], [qc1_c0, qc1_c1]]
 ///
+/// In the batch proof (BatchProof) the same type carries multiple matrices per
+/// batch: the main batch opens one row per instance ([7-wide MulAir row,
+/// 2-wide Fib row]) and the quotient batch one chunk row per instance.
+///
 /// opening_proof: Merkle siblings from the leaf to the root (ValMmcs::Proof).
 pub type BatchOpening {
   opened_values: List<List<Int>>,
@@ -175,6 +179,57 @@ pub type StarkProof<ext> {
   opening_proof: FriProof<ext>,
 }
 
+// ── Batch proof (multi-AIR, batch-stark) ─────────────────────────────────────
+
+/// Out-of-domain evaluations for one instance of a batch proof.
+///
+/// Mirrors OpenedValuesWithLookups<Challenge> (batch-stark/src/proof.rs:41-49)
+/// restricted to its base_opened_values (uni-stark OpenedValues): the
+/// permutation_local / permutation_next lookup openings are always empty while
+/// lookups are disabled, so they are omitted here. Add them when porting the
+/// LogUp lookup argument.
+///
+/// Same field meanings as OpenedValues above, but sized per instance:
+///   MulAir      : trace_local/next have 7 elements (reps = 2 → 2*3+1 columns)
+///   FibonacciAir: trace_local/next have 2 elements
+/// Both instances have degree-2 constraints → 1 quotient chunk each, with
+/// DIMENSION = 2 ext elements per chunk.
+pub type InstanceOpenedValues<ext> {
+  trace_local: List<ext>,
+  trace_next: List<ext>,
+  quotient_chunks: List<List<ext>>,
+}
+
+/// A complete Plonky3 batch-STARK proof (multi-AIR, shared commitments).
+///
+/// Mirrors BatchProof<SC> (batch-stark/src/proof.rs:12-24) flattened for the
+/// no-lookup, non-ZK configuration:
+///   - commitments (BatchCommitments, proof.rs:28-38) is flattened into
+///     main_commit + quotient_commit; the permutation and random commitments
+///     are None without lookups/ZK and are omitted.
+///   - opened_values (BatchOpenedValues, proof.rs:52-56) is the instances list
+///     directly, in prover order: [MulAir, FibonacciAir].
+///   - global_lookup_data is empty without lookups and is omitted.
+///
+/// degree_bits:
+///   Per-instance log2 of the extended trace domain size (= log2(n_i) + is_zk,
+///   and is_zk = 0 here). One entry per instance, prover order.
+///
+/// main_commit:
+///   Single Merkle root committing to ALL instances' main trace LDE matrices
+///   (multi-matrix MMCS commitment).
+///
+/// quotient_commit:
+///   Single Merkle root committing to all quotient chunk matrices across all
+///   instances.
+pub type BatchProof<ext> {
+  degree_bits: List<Int>,
+  main_commit: Commitment,
+  quotient_commit: Commitment,
+  opened_values: List<InstanceOpenedValues<ext>>,
+  opening_proof: FriProof<ext>,
+}
+
 // ── Public inputs ─────────────────────────────────────────────────────────────
 
 /// Public inputs for the Fibonacci STARK (pis in fib_air.rs).
@@ -230,6 +285,67 @@ pub fn valid_fri_proof_shape(
   ) == num_rounds && list_len(fp.query_proofs) == num_queries && list_len(
     fp.final_poly,
   ) == final_poly_len
+}
+
+/// Check that one instance's opened values have the expected shape.
+///
+/// Same checks as valid_opened_values_shape, per instance:
+///   - trace_local and trace_next have exactly trace_width elements
+///   - quotient_chunks has exactly num_quotient_chunks entries
+pub fn valid_instance_opened_values_shape(
+  ov: InstanceOpenedValues<ext>,
+  trace_width: Int,
+  num_quotient_chunks: Int,
+) -> Bool {
+  list_len(ov.trace_local) == trace_width && list_len(ov.trace_next) == trace_width && list_len(
+    ov.quotient_chunks,
+  ) == num_quotient_chunks
+}
+
+/// Check the shape of a whole batch proof against per-instance parameters.
+///
+/// trace_widths and nums_quotient_chunks carry one entry per instance, in
+/// prover order; the proof must have exactly that many instances (checked via
+/// the zip-walk: length mismatches in any of the three lists fail).
+///
+/// The FRI proof shape is shared across instances and checked exactly as in
+/// the uni-stark case via valid_fri_proof_shape.
+pub fn valid_batch_proof_shape(
+  proof: BatchProof<ext>,
+  trace_widths: List<Int>,
+  nums_quotient_chunks: List<Int>,
+  num_rounds: Int,
+  num_queries: Int,
+  final_poly_len: Int,
+) -> Bool {
+  list_len(proof.degree_bits) == list_len(trace_widths) && valid_instances_shape(
+    proof.opened_values,
+    trace_widths,
+    nums_quotient_chunks,
+  ) && valid_fri_proof_shape(
+    proof.opening_proof,
+    num_rounds,
+    num_queries,
+    final_poly_len,
+  )
+}
+
+/// Zip-walk over (instances, widths, chunk counts); False on length mismatch.
+fn valid_instances_shape(
+  instances: List<InstanceOpenedValues<ext>>,
+  trace_widths: List<Int>,
+  nums_quotient_chunks: List<Int>,
+) -> Bool {
+  when (instances, trace_widths, nums_quotient_chunks) is {
+    ([], [], []) -> True
+    ([ov, ..rest_ov], [w, ..rest_w], [nc, ..rest_nc]) ->
+      if valid_instance_opened_values_shape(ov, w, nc) {
+        valid_instances_shape(rest_ov, rest_w, rest_nc)
+      } else {
+        False
+      }
+    _ -> False
+  }
 }
 
 // ── List helpers ──────────────────────────────────────────────────────────────

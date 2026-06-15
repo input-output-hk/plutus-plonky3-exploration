@@ -13,6 +13,30 @@ pub const log_num_quotient_chunks: Int = 0
 
 pub const num_quotient_chunks: Int = 1
 
+// ── Batch proof parameters (MulAir + FibonacciAir, lookups off) ──────────────
+// Mirror the configuration in plonky3/src/export_batch_proof.rs. All lists are
+// per instance, in prover order: [MulAir, FibonacciAir].
+
+/// Number of instances in the batch proof.
+pub const batch_n_instances: Int = 2
+
+/// Per-instance log2 of the extended trace domain size (= log2(n_i), is_zk = 0).
+/// Both traces have 2^10 rows.
+pub const batch_degree_bits: List<Int> = [13, 13]
+
+/// Largest per-instance degree_bits; drives the FRI round count.
+pub const batch_max_degree_bits: Int = 13
+
+/// Per-instance main trace widths: MulAir = reps*3 + 1 = 7, FibonacciAir = 2.
+pub const batch_trace_widths: List<Int> = [7, 2]
+
+/// Per-instance public value counts: MulAir has none, FibonacciAir has (a, b, x).
+pub const batch_num_public_values: List<Int> = [0, 3]
+
+/// Per-instance quotient chunk counts: both AIRs have max constraint degree 2,
+/// so log_num_quotient_chunks = 0 and 1 chunk each (cf. num_quotient_chunks).
+pub const batch_num_quotient_chunks: List<Int> = [1, 1]
+
 /// Fri parameters
 pub type FriParams {
   log_blowup: Int,

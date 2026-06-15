@@ -9,16 +9,26 @@ use goldilocks/ext2.{Ext2}
 /// with cap_height = 0 (the commitment is a single 32-byte SHA-256 root).
 ///
 /// Hashing conventions (N = 2, binary):
-///   leaf_hash(row) = sha256(le8(row[0]) || le8(row[1]) || ...)
-///   compress(l, r) = sha256(l || r)          -- CompressionFunctionFromHasher flattens then hashes
+///   leaf_hash(rows) = sha256(le8 bytes of every row, concatenated in matrix order)
+///   compress(l, r)  = sha256(l || r)         -- CompressionFunctionFromHasher flattens then hashes
 ///
-/// verify_batch(root, index, row_vals, path):
-///   1. leaf = leaf_hash(row_vals)
+/// verify_batch(root, index, rows, path):
+///   1. leaf = leaf_hash(rows)   -- one row per committed matrix, mirrors
+///      hash_iter_slices over all matrices at the leaf height
+///      (merkle-tree/src/mmcs.rs:296-352, tallest-first stable order =
+///      insertion order when heights are equal).
 ///   2. For each sibling in path (leaf → root):
 ///        if index % 2 == 0 : parent = sha256(current || sibling)
 ///        else               : parent = sha256(sibling || current)
 ///        index /= 2
 ///   3. Assert current == root.
+///
+/// ASSUMPTION: all matrices in one commitment have the same height, so they
+/// all enter the single leaf hash. Plonky3 also supports matrices of smaller
+/// heights, whose row digests are injected at intermediate levels of the walk
+/// (mmcs.rs `has_intermediate` / injection logic) — TODO: not supported here;
+/// both the uni-stark proof and the batch proof (all traces at 2^10, all
+/// quotient chunks at 2^10, LDE 2^18) satisfy the equal-height assumption.
 ///
 /// verify_batch_ext(root, index, ext_row, path):
 ///   Flatten each Ext2 element to [c0, c1] then call verify_batch.
@@ -40,10 +50,25 @@ fn do_row_to_bytes(values: List<Int>, acc: ByteArray) -> ByteArray {
   }
 }
 
-/// SHA-256 leaf hash: sha256(le8(v0) || le8(v1) || ...).
+/// SHA-256 leaf hash of a single row: sha256(le8(v0) || le8(v1) || ...).
 /// Mirrors SerializingHasher<Sha256>::hash_iter(row) via F::into_byte_stream.
 pub fn hash_leaf(values: List<Int>) -> ByteArray {
   builtin.sha2_256(row_to_bytes(values))
+}
+
+/// SHA-256 leaf hash of one row per committed matrix, all concatenated.
+/// Mirrors hash_iter_slices over every matrix at the leaf height
+/// (merkle-tree/src/mmcs.rs). Since the le8 serialization concatenates,
+/// hash_leaf_multi([r0, r1]) == hash_leaf(r0 ++ r1).
+pub fn hash_leaf_multi(rows: List<List<Int>>) -> ByteArray {
+  builtin.sha2_256(do_rows_to_bytes(rows, #""))
+}
+
+fn do_rows_to_bytes(rows: List<List<Int>>, acc: ByteArray) -> ByteArray {
+  when rows is {
+    [] -> acc
+    [r, ..rest] -> do_rows_to_bytes(rest, do_row_to_bytes(r, acc))
+  }
 }
 
 // ── Internal node compression ─────────────────────────────────────────────────
@@ -80,24 +105,27 @@ fn verify_merkle_path(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Verify a single-matrix batch opening against a 32-byte SHA-256 Merkle root.
+/// Verify a multi-matrix batch opening against a 32-byte SHA-256 Merkle root.
 ///
 /// Arguments:
 ///   root   – the 32-byte Merkle commitment (cap_height = 0 → single root).
 ///   index  – the leaf index queried (already adjusted by the caller for height).
-///   row    – the base-field (Goldilocks) row values at that index.
+///   rows   – one base-field (Goldilocks) row per committed matrix at that
+///            index, in commit order (= BatchOpening.opened_values). All
+///            matrices must share the leaf height (see module header).
 ///   path   – Merkle sibling hashes from the leaf level to the root.
 ///
 /// Used for:
-///   • ValMmcs input-batch openings (trace and quotient matrices).
+///   • ValMmcs input-batch openings: 1 matrix per batch in the uni-stark
+///     proof, one matrix per instance in the batch proof.
 ///   • Call site in fri.ak: open_input verifies both batches.
 pub fn verify_batch(
   root: ByteArray,
   index: Int,
-  row: List<Int>,
+  rows: List<List<Int>>,
   path: List<ByteArray>,
 ) -> Bool {
-  let leaf = hash_leaf(row)
+  let leaf = hash_leaf_multi(rows)
   verify_merkle_path(root, index, leaf, path)
 }
 
@@ -114,7 +142,7 @@ pub fn verify_batch_ext(
   path: List<ByteArray>,
 ) -> Bool {
   let flat = flatten_ext_row(row)
-  verify_batch(root, index, flat, path)
+  verify_batch(root, index, [flat], path)
 }
 
 /// Flatten [Ext2(c0,c1), ...] → [c0, c1, ...].
@@ -188,7 +216,7 @@ test verify_batch_single_leaf_tree() {
   // A tree with a single leaf has an empty path; root == leaf_hash.
   let row = [42]
   let root = hash_leaf(row)
-  verify_batch(root, 0, row, [])
+  verify_batch(root, 0, [row], [])
 }
 
 test verify_batch_two_leaf_tree() {
@@ -199,9 +227,9 @@ test verify_batch_two_leaf_tree() {
   let h1 = hash_leaf(row1)
   let root = compress(h0, h1)
   // Leaf 0: index=0 (even) → parent = compress(h0, h1)
-  let ok0 = verify_batch(root, 0, row0, [h1])
+  let ok0 = verify_batch(root, 0, [row0], [h1])
   // Leaf 1: index=1 (odd) → parent = compress(h1_sibling=h0, h1)
-  let ok1 = verify_batch(root, 1, row1, [h0])
+  let ok1 = verify_batch(root, 1, [row1], [h0])
   ok0 && ok1
 }
 
@@ -224,13 +252,36 @@ test verify_batch_four_leaf_tree() {
   let root = compress(left_parent, right_parent)
   // Leaf at index 2 (row [3]): sibling = h3, then sibling = left_parent
   let path2 = [h3, left_parent]
-  verify_batch(root, 2, [3], path2)
+  verify_batch(root, 2, [[3]], path2)
 }
 
 test verify_batch_wrong_row_fails() {
   let row = [99]
   let root = hash_leaf([100])
-  !verify_batch(root, 0, row, [])
+  !verify_batch(root, 0, [row], [])
+}
+
+test hash_leaf_multi_is_concat() {
+  // Multi-matrix leaf hash == single hash of the concatenated rows, since
+  // the le8 serialization concatenates (mirrors hash_iter_slices upstream).
+  hash_leaf_multi([[1, 2], [3]]) == hash_leaf([1, 2, 3])
+}
+
+test verify_batch_two_matrices() {
+  // Two equal-height matrices (widths 2 and 1) in one 2-leaf tree:
+  // leaf_i = sha256(m0_row_i || m1_row_i).
+  let leaf0 = hash_leaf_multi([[10, 20], [50]])
+  let leaf1 = hash_leaf_multi([[30, 40], [60]])
+  let root = compress(leaf0, leaf1)
+  let ok0 = verify_batch(root, 0, [[10, 20], [50]], [leaf1])
+  let ok1 = verify_batch(root, 1, [[30, 40], [60]], [leaf0])
+  ok0 && ok1
+}
+
+test verify_batch_matrix_order_matters() {
+  // Swapping matrix order changes the leaf hash — commit order is binding.
+  let root = hash_leaf_multi([[1], [2]])
+  !verify_batch(root, 0, [[2], [1]], [])
 }
 
 test flatten_ext_row_empty() {

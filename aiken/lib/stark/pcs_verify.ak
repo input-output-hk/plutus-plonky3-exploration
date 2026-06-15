@@ -4,7 +4,10 @@ use goldilocks/field as gf
 use stark/challenger.{ChallengerState}
 use stark/fri
 use stark/params
-use stark/proof.{CommitPhaseStep, OpenedValues, QueryProof, StarkProof}
+use stark/proof.{
+  BatchProof, CommitPhaseStep, InstanceOpenedValues, OpenedValues, QueryProof,
+  StarkProof,
+}
 
 // ── PCS verifier ───────────────────────────────────────────────────────────────
 
@@ -67,21 +70,13 @@ pub fn pcs_verify(
 
   // ── 3. Commit phase: observe, check PoW per round, sample betas ─────────────
   when
-    process_commit_rounds(
-      st,
-      fp.commit_phase_commits,
-      fp.commit_pow_witnesses,
-      [],
-    )
+    process_commit_rounds(st, fp.commit_phase_commits, fp.commit_pow_witnesses)
   is {
     None -> {
       trace @"FAIL: commit-phase PoW"
       False
     }
-    Some((betas_rev, st)) -> {
-      // Betas were prepended during accumulation; restore forward order.
-      let betas = list_reverse_ext(betas_rev)
-
+    Some((betas, st)) -> {
       // ── 4. Observe final polynomial ────────────────────────────────────────
       let st = challenger.observe_exts(st, fp.final_poly)
 
@@ -126,6 +121,259 @@ pub fn pcs_verify(
   }
 }
 
+// ── Batch PCS verifier ─────────────────────────────────────────────────────────
+
+/// Batch-proof variant of pcs_verify (TwoAdicFriPcs::verify → verify_fri for
+/// the MulAir + FibonacciAir batch proof).
+///
+/// Identical transcript structure to pcs_verify; only the opened-values
+/// observation and the per-query input opening differ:
+///   - opened values are observed rounds → matrices → points → values
+///     (two_adic_pcs.rs:678-684): for each instance, trace_local then
+///     trace_next; then for each instance, each quotient chunk.
+///   - open_input walks one Merkle row per instance in each of the two
+///     batches (fri.open_input_batch).
+///
+/// zeta_next: all instances share the same trace domain (equal degree_bits,
+/// see params.batch_degree_bits), so the per-instance next_point(zeta) of
+/// batch-stark/verifier.rs:289-291 collapses to the single value passed here.
+pub fn pcs_verify_batch(
+  st: ChallengerState,
+  proof: BatchProof<Ext2>,
+  zeta: Ext2,
+  zeta_next: Ext2,
+) -> Bool {
+  let fp = proof.opening_proof
+
+  // ── 1. pcs.verify: observe opened values ────────────────────────────────────
+  let st = observe_batch_opened_values(st, proof.opened_values)
+
+  // ── 2. FRI combination challenge (alpha_fri) ────────────────────────────────
+  let (alpha_fri, st) = challenger.sample_ext(st)
+
+  // ── 3. Commit phase: observe, check PoW per round, sample betas ─────────────
+  when
+    process_commit_rounds(st, fp.commit_phase_commits, fp.commit_pow_witnesses)
+  is {
+    None -> {
+      trace @"FAIL: commit-phase PoW"
+      False
+    }
+    Some((betas, st)) -> {
+      // ── 4. Observe final polynomial ────────────────────────────────────────
+      let st = challenger.observe_exts(st, fp.final_poly)
+
+      // ── 5. Observe per-round log_arities ───────────────────────────────────
+      let log_arities = extract_log_arities(fp.query_proofs)
+      let st = challenger.observe_vals(st, log_arities)
+
+      let log_global_max_height =
+        list_sum(log_arities) + params.fri_params.log_blowup + params.fri_params.log_final_poly_len
+
+      // ── 6. Query proof-of-work ─────────────────────────────────────────────
+      let (pow_ok, st) =
+        challenger.check_pow(
+          st,
+          params.fri_params.query_proof_of_work_bits,
+          fp.query_pow_witness,
+        )
+      if !pow_ok {
+        trace @"FAIL: query PoW"
+        False
+      } else {
+        // ── 7. Query phase ────────────────────────────────────────────────
+        verify_all_queries_batch(
+          st,
+          log_global_max_height,
+          alpha_fri,
+          zeta,
+          zeta_next,
+          betas,
+          fp.commit_phase_commits,
+          fp.final_poly,
+          fp.query_proofs,
+          proof.main_commit,
+          proof.quotient_commit,
+          proof.opened_values,
+          0,
+        )
+      }
+    }
+  }
+}
+
+/// Verify all batch FRI query proofs, sampling a fresh index for each one.
+fn verify_all_queries_batch(
+  st: ChallengerState,
+  log_global_max_height: Int,
+  alpha_fri: Ext2,
+  zeta: Ext2,
+  zeta_next: Ext2,
+  betas: List<Ext2>,
+  commits: List<ByteArray>,
+  final_poly: List<Ext2>,
+  query_proofs: List<QueryProof<Ext2>>,
+  main_commit: ByteArray,
+  quotient_commit: ByteArray,
+  instances: List<InstanceOpenedValues<Ext2>>,
+  query_idx: Int,
+) -> Bool {
+  when query_proofs is {
+    [] -> True
+    [qp, ..rest] -> {
+      let (index, st) = challenger.sample_bits(st, log_global_max_height)
+      let ok =
+        verify_single_query_batch(
+          index,
+          log_global_max_height,
+          alpha_fri,
+          zeta,
+          zeta_next,
+          betas,
+          commits,
+          final_poly,
+          qp,
+          main_commit,
+          quotient_commit,
+          instances,
+        )
+      if !ok {
+        trace string.concat(@"FAIL: batch query ", string.from_int(query_idx))
+        False
+      } else {
+        verify_all_queries_batch(
+          st,
+          log_global_max_height,
+          alpha_fri,
+          zeta,
+          zeta_next,
+          betas,
+          commits,
+          final_poly,
+          rest,
+          main_commit,
+          quotient_commit,
+          instances,
+          query_idx + 1,
+        )
+      }
+    }
+  }
+}
+
+/// Verify one batch FRI query: open_input_batch → verify_query → final poly.
+fn verify_single_query_batch(
+  index: Int,
+  log_global_max_height: Int,
+  alpha_fri: Ext2,
+  zeta: Ext2,
+  zeta_next: Ext2,
+  betas: List<Ext2>,
+  commits: List<ByteArray>,
+  final_poly: List<Ext2>,
+  qp: QueryProof<Ext2>,
+  main_commit: ByteArray,
+  quotient_commit: ByteArray,
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> Bool {
+  // input_proof in coms_to_verify order: [main, quotient_chunks]
+  // (no random/preprocessed/permutation rounds in this configuration).
+  when qp.input_proof is {
+    [main_opening, quotient_opening, ..] ->
+      when
+        fri.open_input_batch(
+          index,
+          log_global_max_height,
+          alpha_fri,
+          zeta,
+          zeta_next,
+          main_opening,
+          quotient_opening,
+          main_commit,
+          quotient_commit,
+          instances,
+        )
+      is {
+        None -> {
+          trace @"FAIL: open_input_batch (Merkle or denominator)"
+          False
+        }
+        Some(ro) ->
+          when
+            fri.verify_query(
+              index,
+              log_global_max_height,
+              betas,
+              commits,
+              qp.commit_phase_openings,
+              ro,
+            )
+          is {
+            None -> {
+              trace @"FAIL: verify_query (FRI fold chain)"
+              False
+            }
+            Some((folded_eval, final_idx)) -> {
+              let x =
+                gf.pow(
+                  gf.two_adic_generator(log_global_max_height),
+                  fri.reverse_bits_len(final_idx, log_global_max_height),
+                )
+              let poly_ok =
+                ext2.eq_fast(folded_eval, eval_final_poly(final_poly, x))
+              trace if poly_ok {
+                @"poly ok"
+              } else {
+                @"FAIL: final poly mismatch"
+              }
+              poly_ok
+            }
+          }
+      }
+    _ -> False
+  }
+}
+
+/// Observe batch opened values rounds → matrices → points → values
+/// (two_adic_pcs.rs:678-684): main round first (per instance: trace_local at
+/// zeta, then trace_next at zeta_next), then the quotient round (per
+/// instance, each chunk at zeta).
+fn observe_batch_opened_values(
+  st: ChallengerState,
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> ChallengerState {
+  let st = observe_main_round(st, instances)
+  observe_quotient_round(st, instances)
+}
+
+fn observe_main_round(
+  st: ChallengerState,
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> ChallengerState {
+  when instances is {
+    [] -> st
+    [inst, ..rest] -> {
+      let st = challenger.observe_exts(st, inst.trace_local)
+      let st = challenger.observe_exts(st, inst.trace_next)
+      observe_main_round(st, rest)
+    }
+  }
+}
+
+fn observe_quotient_round(
+  st: ChallengerState,
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> ChallengerState {
+  when instances is {
+    [] -> st
+    [inst, ..rest] ->
+      observe_quotient_round(
+        observe_quotient_chunks(st, inst.quotient_chunks),
+        rest,
+      )
+  }
+}
+
 // ── Transcript helpers ─────────────────────────────────────────────────────────
 
 /// Observe opened values in the same order pcs.verify feeds them to the challenger.
@@ -158,16 +406,15 @@ fn observe_quotient_chunks(
 /// Process all FRI commit-phase rounds.
 ///
 /// For each round: observe the commitment, check proof-of-work, sample a beta challenge.
-/// Betas are returned in reverse order (caller reverses them).
+/// Betas are returned in forward (round) order.
 /// Returns None on any PoW failure or list-length mismatch.
 fn process_commit_rounds(
   st: ChallengerState,
   commits: List<ByteArray>,
   witnesses: List<Int>,
-  acc: List<Ext2>,
 ) -> Option<(List<Ext2>, ChallengerState)> {
   when (commits, witnesses) is {
-    ([], []) -> Some((acc, st))
+    ([], []) -> Some(([], st))
     ([commit, ..rest_commits], [witness, ..rest_witnesses]) -> {
       let st = challenger.observe_commitment(st, commit)
       let (pow_ok, st) =
@@ -180,7 +427,10 @@ fn process_commit_rounds(
         None
       } else {
         let (beta, st) = challenger.sample_ext(st)
-        process_commit_rounds(st, rest_commits, rest_witnesses, [beta, ..acc])
+        when process_commit_rounds(st, rest_commits, rest_witnesses) is {
+          None -> None
+          Some((betas, st)) -> Some(([beta, ..betas], st))
+        }
       }
     }
     _ -> None
@@ -452,11 +702,11 @@ test observe_opened_values_clears_output() {
 
 test process_commit_rounds_empty() {
   let st = challenger.init()
-  process_commit_rounds(st, [], [], []) == Some(([], st))
+  process_commit_rounds(st, [], []) == Some(([], st))
 }
 
 test process_commit_rounds_mismatched_lengths_returns_none() {
   let dummy =
     #"0000000000000000000000000000000000000000000000000000000000000000"
-  process_commit_rounds(challenger.init(), [dummy], [], []) == None
+  process_commit_rounds(challenger.init(), [dummy], []) == None
 }

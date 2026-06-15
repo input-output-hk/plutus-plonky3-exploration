@@ -3,7 +3,9 @@ use goldilocks/ext2.{Ext2}
 use goldilocks/field as gf
 use stark/mmcs
 use stark/params
-use stark/proof.{BatchOpening, CommitPhaseStep, OpenedValues}
+use stark/proof.{
+  BatchOpening, CommitPhaseStep, InstanceOpenedValues, OpenedValues,
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +131,8 @@ pub fn open_input(
   quotient_commit: ByteArray,
   ov: OpenedValues<Ext2>,
 ) -> Option<Ext2> {
-  // Each batch has exactly one matrix for the Fibonacci STARK.
+  // Each batch has exactly one matrix for the Fibonacci STARK; the Merkle
+  // verification below nonetheless hashes all matrices in the batch.
   when
     (
       trace_opening.opened_values,
@@ -143,14 +146,14 @@ pub fn open_input(
         mmcs.verify_batch(
           trace_commit,
           index,
-          trace_row,
+          trace_opening.opened_values,
           trace_opening.opening_proof,
         )
       let quot_ok =
         mmcs.verify_batch(
           quotient_commit,
           index,
-          quot_row,
+          quotient_opening.opened_values,
           quotient_opening.opening_proof,
         )
       if !trace_ok || !quot_ok {
@@ -204,7 +207,9 @@ pub fn open_input(
 ///   ro      += alpha_pow · (ps_at_z[i] − ps_at_x[i]) · inv_denom
 ///   alpha_pow *= alpha
 ///
-/// Mirrors the innermost loop of open_input in verifier.rs:493–501.
+/// Mirrors the innermost loop of open_input in verifier.rs:493–501, with
+/// inv_denom factored out of the per-column loop (algebraically identical:
+/// Σ αⁱ·dᵢ·inv = inv·Σ αⁱ·dᵢ) — one ext2.mul per call instead of per column.
 fn acc_cols(
   ps_at_x: List<Int>,
   ps_at_z: List<Ext2>,
@@ -213,22 +218,193 @@ fn acc_cols(
   ro: Ext2,
   alpha_pow: Ext2,
 ) -> (Ext2, Ext2) {
+  let (sum, ap) = dot_diff(ps_at_x, ps_at_z, alpha, ext2.zero, alpha_pow)
+  (ext2.add(ro, ext2.mul(inv_denom, sum)), ap)
+}
+
+/// sum += alpha_pow · (ps_at_z[i] − ps_at_x[i]); alpha_pow *= alpha.
+fn dot_diff(
+  ps_at_x: List<Int>,
+  ps_at_z: List<Ext2>,
+  alpha: Ext2,
+  sum: Ext2,
+  alpha_pow: Ext2,
+) -> (Ext2, Ext2) {
   when (ps_at_x, ps_at_z) is {
-    ([], []) -> (ro, alpha_pow)
+    ([], []) -> (sum, alpha_pow)
     ([p_at_x, ..rest_row], [p_at_z, ..rest_ps]) -> {
       let diff = ext2.sub_base(p_at_z, p_at_x)
-      let contrib = ext2.mul(alpha_pow, ext2.mul(diff, inv_denom))
-      acc_cols(
+      dot_diff(
         rest_row,
         rest_ps,
-        inv_denom,
         alpha,
-        ext2.add(ro, contrib),
+        ext2.add(sum, ext2.mul(alpha_pow, diff)),
         ext2.mul(alpha_pow, alpha),
       )
     }
     // Mismatched lengths — invalid proof shape; return as-is.
-    _ -> (ro, alpha_pow)
+    _ -> (sum, alpha_pow)
+  }
+}
+
+// ── Batch-proof input opening ─────────────────────────────────────────────────
+
+/// Batch-proof variant of open_input (fri/src/verifier.rs:424-…).
+///
+/// Rounds in coms_to_verify order (batch-stark/verifier.rs:249-346, no
+/// random/preprocessed/permutation rounds): [main, quotient_chunks].
+///
+/// ASSUMES every matrix shares one height — all traces and quotient chunks sit
+/// at 2^batch_degree_bits, LDE height 2^log_global_max_height (same assumption
+/// as mmcs.ak). Upstream keys reduced openings by log_height with one alpha
+/// power chain each (BTreeMap in open_input); with equal heights this
+/// degenerates to a single accumulator whose alpha powers run consecutively
+/// over, in order:
+///   for each instance:  trace row at zeta, then at zeta_next
+///   for each instance:  each quotient chunk row at zeta
+/// and a single LDE point x = GENERATOR · g_h^{reverse_bits_len(index, h)}
+/// with h = log_global_max_height (bits_reduced = 0 for every matrix).
+pub fn open_input_batch(
+  index: Int,
+  log_global_max_height: Int,
+  alpha: Ext2,
+  zeta: Ext2,
+  zeta_next: Ext2,
+  main_opening: BatchOpening,
+  quotient_opening: BatchOpening,
+  main_commit: ByteArray,
+  quotient_commit: ByteArray,
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> Option<Ext2> {
+  // Step 1: Verify both multi-matrix Merkle proofs (reduced_index = index,
+  // since the batch max height equals the global max height).
+  let main_ok =
+    mmcs.verify_batch(
+      main_commit,
+      index,
+      main_opening.opened_values,
+      main_opening.opening_proof,
+    )
+  let quot_ok =
+    mmcs.verify_batch(
+      quotient_commit,
+      index,
+      quotient_opening.opened_values,
+      quotient_opening.opening_proof,
+    )
+  if !main_ok || !quot_ok {
+    None
+  } else {
+    // Step 2: LDE evaluation point, shared by all matrices (equal heights).
+    let x =
+      gf.mul(
+        gf.generator,
+        gf.pow(
+          gf.two_adic_generator(log_global_max_height),
+          reverse_bits_len(index, log_global_max_height),
+        ),
+      )
+    // Step 3: DEEP-polynomial denominators.
+    when
+      (
+        ext2.inverse(ext2.sub_base(zeta, x)),
+        ext2.inverse(ext2.sub_base(zeta_next, x)),
+      )
+    is {
+      (Some(inv_z), Some(inv_zn)) ->
+        // Step 4: accumulate the reduced opening: main round, then quotient.
+        when
+          acc_main_round(
+            main_opening.opened_values,
+            instances,
+            inv_z,
+            inv_zn,
+            alpha,
+            ext2.zero,
+            ext2.one,
+          )
+        is {
+          Some((ro_main, ap_main)) ->
+            when
+              acc_quotient_round(
+                quotient_opening.opened_values,
+                flatten_instance_chunks(instances),
+                inv_z,
+                alpha,
+                ro_main,
+                ap_main,
+              )
+            is {
+              Some((ro, _)) -> Some(ro)
+              None -> None
+            }
+          None -> None
+        }
+      _ -> None
+    }
+  }
+}
+
+/// Main round: zip the opened Merkle rows (one per instance) with the OOD
+/// values; per matrix, accumulate (zeta, trace_local) then (zeta_next,
+/// trace_next) — points in order, alpha powers continuing across instances.
+fn acc_main_round(
+  rows: List<List<Int>>,
+  instances: List<InstanceOpenedValues<Ext2>>,
+  inv_z: Ext2,
+  inv_zn: Ext2,
+  alpha: Ext2,
+  ro: Ext2,
+  alpha_pow: Ext2,
+) -> Option<(Ext2, Ext2)> {
+  when (rows, instances) is {
+    ([], []) -> Some((ro, alpha_pow))
+    ([row, ..rest_rows], [inst, ..rest_insts]) -> {
+      let (ro1, ap1) =
+        acc_cols(row, inst.trace_local, inv_z, alpha, ro, alpha_pow)
+      let (ro2, ap2) = acc_cols(row, inst.trace_next, inv_zn, alpha, ro1, ap1)
+      acc_main_round(rest_rows, rest_insts, inv_z, inv_zn, alpha, ro2, ap2)
+    }
+    _ -> None
+  }
+}
+
+/// Quotient round: one Merkle row per chunk matrix, flattened across
+/// instances in prover order; every chunk is opened at zeta only.
+fn acc_quotient_round(
+  rows: List<List<Int>>,
+  chunks: List<List<Ext2>>,
+  inv_z: Ext2,
+  alpha: Ext2,
+  ro: Ext2,
+  alpha_pow: Ext2,
+) -> Option<(Ext2, Ext2)> {
+  when (rows, chunks) is {
+    ([], []) -> Some((ro, alpha_pow))
+    ([row, ..rest_rows], [chunk, ..rest_chunks]) -> {
+      let (ro1, ap1) = acc_cols(row, chunk, inv_z, alpha, ro, alpha_pow)
+      acc_quotient_round(rest_rows, rest_chunks, inv_z, alpha, ro1, ap1)
+    }
+    _ -> None
+  }
+}
+
+/// [inst0.chunks ++ inst1.chunks ++ ...] — matches the qc_round flattening
+/// in batch-stark/verifier.rs:330-346.
+fn flatten_instance_chunks(
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> List<List<Ext2>> {
+  when instances is {
+    [] -> []
+    [inst, ..rest] ->
+      append_chunks(inst.quotient_chunks, flatten_instance_chunks(rest))
+  }
+}
+
+fn append_chunks(xs: List<List<Ext2>>, ys: List<List<Ext2>>) -> List<List<Ext2>> {
+  when xs is {
+    [] -> ys
+    [x, ..rest] -> [x, ..append_chunks(rest, ys)]
   }
 }
 

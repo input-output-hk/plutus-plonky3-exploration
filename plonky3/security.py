@@ -77,8 +77,11 @@ def queries_error(log_inv_rate: int, num_queries: int, log_c: float) -> float:
 # ---------------------------------------------------------------------------
 
 def run_generic(label: str, security_level: int, query_pow_bits: int, commit_pow_bits: int,
-                log_inv_rate: int,  field_size_bits: int, log_degree: int, num_columns: int) -> None:
+                log_inv_rate: int,  field_size_bits: int, log_degree: int,
+                num_batched_polys: int, num_fri_rounds: int) -> None:
     qsl = security_level - query_pow_bits
+    # union bound over the r FRI fold rounds: r rounds cost an extra log2(r) bits
+    log_num_fri_rounds = math.log2(num_fri_rounds)
 
     assert field_size_bits > security_level, "field must exceed security level"
     print(f"\n===== {label}: field_size_bits = {field_size_bits} =====")
@@ -93,9 +96,11 @@ def run_generic(label: str, security_level: int, query_pow_bits: int, commit_pow
     chosen_m = None
     for m in range(3, 101):
         log_c = math.log2(2.0 * m)
-        # num_functions = 2: generic RS proximity gap of a 2-element line {f0, f0 + r*f1}.
-        prox = prox_gaps_error(log_degree, log_inv_rate, field_size_bits, 2, log_c)
-        if prox + commit_pow_bits < security_level:
+        # num_batched_polys: the (column, opening-point) pairs batched by powers of alpha.
+        prox = prox_gaps_error(log_degree, log_inv_rate, field_size_bits,
+                               num_batched_polys, log_c)
+        # require the folded (r-round) commit term to still clear the target
+        if prox - log_num_fri_rounds + commit_pow_bits < security_level:
             break
         chosen_m = m
 
@@ -103,9 +108,11 @@ def run_generic(label: str, security_level: int, query_pow_bits: int, commit_pow
     # commit phase (even with commit grinding) caps below the target: UNREACHABLE at this
     # field/degree/rate -- no number of queries can fix it.
     if chosen_m is None:
-        max_prox = prox_gaps_error(log_degree, log_inv_rate, field_size_bits, 2, math.log2(2.0 * 3.0))
-        print(f"  UNREACHABLE: prox_gaps caps at {max_prox:.1f} + {commit_pow_bits} commit_pow = "
-              f"{max_prox + commit_pow_bits:.1f} bits < security {security_level} "
+        max_prox = prox_gaps_error(log_degree, log_inv_rate, field_size_bits,
+                                   num_batched_polys, math.log2(2.0 * 3.0))
+        print(f"  UNREACHABLE: prox_gaps caps at {max_prox:.1f} - {log_num_fri_rounds:.1f} log2(r) "
+              f"+ {commit_pow_bits} commit_pow = "
+              f"{max_prox - log_num_fri_rounds + commit_pow_bits:.1f} bits < security {security_level} "
               f"(need bigger field / smaller log_degree / smaller rate / more commit_pow)")
         return
 
@@ -128,20 +135,26 @@ def run_generic(label: str, security_level: int, query_pow_bits: int, commit_pow
     # Proven soundness is min(query_phase, commit_phase) -- NOT the query phase alone.
     # Because we pick the largest feasible m, the commit phase is driven down to ~security_level
     # (the break boundary) and is the binding side, even though the query phase often sits higher.
-    commit_total = prox_gaps_error(log_degree, log_inv_rate, field_size_bits, num_columns, chosen_log_c) + commit_pow_bits
+    commit_total = (prox_gaps_error(log_degree, log_inv_rate, field_size_bits,
+                                    num_batched_polys, chosen_log_c)
+                    - log_num_fri_rounds + commit_pow_bits)
     query_total = achieved + query_pow_bits
     print(f"  query phase  = {query_total:.1f} bits (achieved {achieved:.2f} + {query_pow_bits} query_pow)")
-    print(f"  commit phase = {commit_total:.1f} bits (prox + {commit_pow_bits} commit_pow)")
+    print(f"  commit phase = {commit_total:.1f} bits (prox - {log_num_fri_rounds:.2f} log2(r) + {commit_pow_bits} commit_pow)")
     print(f"  => proven soundness = min = {min(query_total, commit_total):.1f} bits")
 
 
 def main() -> None:
-    security_level = 100
+    security_level = 105
     query_pow_bits = 16   # grind backing the QUERY phase; the rest must come from queries
     commit_pow_bits = 16  # grind backing the COMMIT/proximity-gaps phase (separate budget)
-    log_inv_rate = 16      # log_blowup -> rho = 2^-4
+    log_inv_rate = 2      # log_blowup -> rho = 2^-4
     air_log_degree = 13       # log2 of the message length (only used by the list/prox-gap terms)
-    air_num_columns = 2
+    # (column, point) pairs in the alpha-batched DEEP quotient:
+    # trace_width(2) * trace points(2: zeta, zeta*g)
+    #   + num_quotient_chunks(1) * ext_degree(2) * quotient points(1: zeta)
+    num_batched_polys = 6
+    num_fri_rounds = air_log_degree  # degree_bits - log_final_poly_len (log_final_poly_len = 0)
 
     # field_size_bits is the EXTENSION field size = bits per Fiat-Shamir challenge.
     #   KoalaBear^4 = 4*31 = 124
@@ -155,7 +168,8 @@ def main() -> None:
         ("Goldilocks^3", 192),
     ]:
         run_generic(label, security_level, query_pow_bits, commit_pow_bits,
-                    log_inv_rate, field_size_bits, air_log_degree, air_num_columns)
+                    log_inv_rate, field_size_bits, air_log_degree, num_batched_polys,
+                    num_fri_rounds)
 
 
 if __name__ == "__main__":

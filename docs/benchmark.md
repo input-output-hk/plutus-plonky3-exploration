@@ -165,14 +165,14 @@ To reach ~100-bit security we can recover the missing bits by grinding `commit_p
 lets us keep Goldilocks². Reaching ~120-bit security instead requires a larger extension
 field - Goldilocks³ or KoalaBear⁵ - which increases the on-chain CPU and memory costs.
 
-### 100-bit security
+### 96-bit security
 
 query_pow = 16, commit_pow = 16, Goldilocks², Fibonacci circuit n = 2¹³ = 8192
 
 | log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
 | ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
-| 2          | 86          | 161.07705ms  | 397983             | 2.610589ms     | 660.52 M   | 216.22 B   |
-| 4          | 43          | 304.008673ms | 240638             | 1.575957ms     | 372.90 M   | 121.99 B   |
+| 2          | 83          | 161.07705ms  | 384126             | 2.610589ms     | 640.81 M   | 209.51 B   |
+| 4          | 42          | 304.008673ms | 235050             | 1.575957ms     | 365.96 M   | 119.60 B   |
 | 8          | 22          | 2.397145461s | 165661             | 1.168463ms     | 232.06 M   | 75.89 B    |
 | 16         | unreachable | —            | —                  | —              | —          | —          |
 
@@ -182,8 +182,8 @@ query_pow = 16, commit_pow = 16, Goldilocks², Fibonacci circuit n = 2¹³ = 819
 
 | log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
 | ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
-| 2          | 93          | 162.101287ms | 430328             | 2.819012ms     | 713.22 M   | 233.46 B   |
-| 4          | 47          | 307.952548ms | 285277             | 1.691252ms     | 405.42 M   | 132.64 B   |
+| 2          | 98          | 162.101287ms | 453422             | 2.819012ms     | 753.32 M   | 246.29 B   |
+| 4          | 51          | 307.952548ms | 285277             | 1.771928ms     | 440.39 M   | 143.92 B   |
 | 8          | unreachable | —            | —                  | —              | —          | —          |
 
 Goldilocks has `two_adicity = 32`. The FRI/LDE evaluation domain must be a two-adic
@@ -195,7 +195,7 @@ target is unreachable regardless of `num_queries`. That is why `log_blowup = 16`
 reach 100-bit security, and `log_blowup = 8` cannot reach 105-bit.
 
 The on-chain `stark_verifier` contract already supports any `log_blowup` and `num_queries`; they
-just need to be set in `params.ak` before calling the verifier. At 100-bit security with
+just need to be set in `params.ak` before calling the verifier. At 96-bit security with
 `log_blowup = 8` and `num_queries = 22`, the proof is 165,661 bytes and contains 22 query
 proofs. We expect to verify each query proof in a single transaction, and thus the full proof
 in ~25 transactions.

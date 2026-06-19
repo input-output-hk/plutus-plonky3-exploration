@@ -101,13 +101,106 @@ benefit. **Implemented — measured result:**
 | After #1 | 142,826,575 | 48,022,137,264 |
 | Reduction | −90,025,669 (−38.7%) | −28,061,257,695 (−36.9%) |
 
-### 2. Batch inversion (Montgomery's trick)
+### 2. Single-slice challenger sampling — read each u64 in one slice instead of eight per-byte pops
 
-For inversions #1 does not already remove (e.g. the per-query DEEP denominators
-in `open_input`): N inversions → 1 inversion + 3(N−1) muls.
+The challenger sampled one byte at a time: `sample_u64` made 8 `sample_byte`
+calls, each allocating a fresh `ChallengerState`, then reassembled the value via
+a big multiply-add chain. Replaced with a single `slice_bytearray` +
+`bytearray_to_integer` per u64. `consumed` is always a multiple of 8 (every
+consumer draws whole u64s, and observe/flush reset it to 0), so the 8 bytes
+never span a flush boundary. Semantics are unchanged — every test, including the
+end-to-end proof, produces identical challenges; a regression test
+(`sample_u64_equals_per_byte_reference`) pins the new `sample_u64` against the
+original byte-at-a-time recombination for every reachable state.
 
-### 3. Trim the ~31% structural overhead
+This alignment holds for any `SerializingChallenger64` (8-byte) instantiation
+regardless of circuit or public-input changes — observes reset `consumed` to 0
+and every draw advances it by 8. It would only break under a non-8-byte sampler,
+i.e. a `SerializingChallenger32` (4-byte) port for a 31-bit field (BabyBear,
+KoalaBear, Mersenne31). An `expect s.consumed % 8 == 0` guard enforces the
+precondition, so such a port fails loudly rather than silently diverging.
 
-`challenger.sample_byte` allocates a fresh `ChallengerState` per byte (8 per
-u64) and reassembles via a big multiply-add chain; slicing 8 bytes at once would
-help. The `acc_cols`/`dot_diff`/fold loops also churn tuples/`Option`s.
+**Implemented — measured result (on top of #1):**
+
+| | mem | cpu |
+|---|---:|---:|
+| After #1 | 142,826,575 | 48,022,137,264 |
+| After #2 | 134,048,495 | 44,974,991,312 |
+| Reduction | −8,778,080 (−6.1%) | −3,047,145,952 (−6.3%) |
+
+Cumulative from the 232,852,244 baseline: **−42.4% mem, −40.9% cpu.**
+
+Still open in this bucket: most of the ~31% is the FRI query/fold loop
+deconstructing the proof's nested list structure (Merkle paths, opened values)
+across 22 queries × 13 rounds, plus tuple/`Option` churn in
+`acc_cols`/`dot_diff`/`do_verify_query`. Reducing it further means restructuring
+how the proof is traversed, not a local rewrite.
+
+## Deferred opportunities
+
+Not implemented here — each is gated on a decision rather than a mechanical
+change (a security-parameter choice, or a single-transaction-only assumption).
+
+### Reduce the FRI query count (right-size soundness parameters)
+
+The FRI parameters (`params.ak` → `fri_params`) are `log_blowup = 8`,
+`num_queries = 22`, `query_proof_of_work_bits = 16`, giving a conjectured
+soundness of `log_blowup × num_queries + query_pow_bits = 8·22 + 16 = 192` bits
+(formula from `docs/benchmark.md`) — roughly **2× a 100-bit target**.
+
+The query phase is per-query and accounts for almost the entire verifier cost
+(the commit phase and transcript are a small shared remainder), so cutting
+`num_queries` scales the dominant cost **near-linearly** and is **split-safe**
+(fewer/smaller shards, no cross-query coupling). To reach ~100 conjectured bits
+at `log_blowup = 8` you need `8q + 16 ≥ 100` → `q ≥ 11`, i.e. 22 → 11 queries,
+roughly **halving** the query-phase work.
+
+**Why it is *not* applied here:** it is a *security-parameter decision*, not a
+mechanical optimization. It requires (a) choosing the target soundness level and
+(b) deciding whether the *conjectured* soundness model is acceptable, or a
+*provable* margin is required — `docs/benchmark.md` notes the Johnson bound is
+substantially lower than the conjectured figure (e.g. ~50-bit vs 116-bit for the
+`log_blowup = 1, num_queries = 100` config). That's a protocol/security call, so
+it is left as a deliberate parameter choice rather than baked in.
+
+Related knob: `log_blowup` trades per-query Merkle path length and `gf.pow`
+exponent size (`log_global_max_height = degree_bits + log_blowup`) against the
+number of queries needed for a given soundness (the fold-round count stays
+`degree_bits` regardless). A joint `(log_blowup, num_queries)` choice can be
+tuned once the target is fixed.
+
+### Batch inversion of field elements (Montgomery's trick) — single-transaction only
+
+`N` independent inversions can be replaced by `1` inversion + `3(N−1)`
+multiplications: accumulate the running products `p_i = a_0·a_1·…·a_i`, invert
+the last one once, then walk back multiplying out each factor. Since a single
+`gf.inverse` (Extended Euclidean) is ~165 K mem and a multiply is far cheaper,
+this is a large win when many inversions are batched.
+
+**Why it is *not* implemented:**
+
+1. **Optimization #1 already drained the bulk.** Before any work there were
+   ~330 field inversions (≈54.5 M). #1 collapsed the 286 fold-chain inversions
+   to ~1 per query. What remains is small — roughly 66 EEAs (~11 M):
+   - `initial_inv_x` (from #1): 1 per query → 22
+   - `open_input` DEEP denominators (`inv_z_x`, `inv_zn_x`): 2 per query → 44
+
+2. **The split-safe form is marginal.** Batching only the two denominators
+   *within* one `open_input` saves ~1 inversion per query ≈ ~3.6 M (~2.7% of the
+   current 134 M) — not worth the added complexity on its own.
+
+3. **The high-impact form breaks query splitting.** The real win comes from
+   batching inversions *across all queries* (collect every denominator — and the
+   per-query `initial_inv_x` seeds — into one pass: 1 inversion + muls). But that
+   couples all queries into a single computation, which is incompatible with the
+   plan to shard queries across separate transactions (see the cross-query
+   coupling discussion: any shared inversion accumulator destroys per-query
+   independence).
+
+**When to revisit:** if the whole proof is verified in a **single transaction**
+(no sharding), cross-query batch inversion becomes viable. Collect all ~66
+inversion inputs (44 `open_input` denominators + 22 `initial_inv_x` seeds, or as
+many as is convenient), do one `gf.inverse` + `3(N−1)` muls, and recover the
+individual inverses. Estimated saving on top of #1+#2: replacing ~65 EEAs with 1
+≈ **~10 M mem**. In that single-tx setting it is one of the cleaner remaining
+wins; under sharding it is off the table.

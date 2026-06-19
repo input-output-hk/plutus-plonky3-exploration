@@ -1,0 +1,22 @@
+# ── Build output ────────────────────────────────────────────────────────────
+# Aiken compiler output
+aiken/build/
+# Rust / Cargo build output
+plonky3/target/
+target/
+
+# ── Generated proof artifacts ───────────────────────────────────────────────
+# Exported by export_proof.exe / export_batch_proof.exe; regenerate as needed.
+plonky3/proof.json
+plonky3/batch_proof.json
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── OS / editor cruft ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp

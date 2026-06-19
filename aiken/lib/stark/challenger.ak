@@ -111,19 +111,36 @@ fn sample_byte(st: ChallengerState) -> (Int, ChallengerState) {
 }
 
 /// Sample 8 consecutive bytes and combine as a little-endian u64.
-/// b0 (first pop = output[31]) is the LSB: value = b0 + b1·256 + … + b7·256⁷.
+///
+/// Semantically identical to popping 8 bytes back-to-front (output[31-consumed]
+/// as LSB … output[24-consumed] as MSB) but reads them in a single slice +
+/// bytearray_to_integer instead of eight `sample_byte` calls, each of which
+/// allocated a fresh ChallengerState (see docs/memory-profiling.md, opt #2).
+///
+/// `consumed` is always a multiple of 8: every consumer draws whole u64s, and
+/// observe/flush reset it to 0. So the 8 bytes never span a flush boundary, and
+/// reading the slice output[24-consumed .. 31-consumed] big-endian equals the
+/// LSB-first value  output[31-consumed] + output[30-consumed]·256 + … .
 fn sample_u64(st: ChallengerState) -> (Int, ChallengerState) {
-  let (b0, s0) = sample_byte(st)
-  let (b1, s1) = sample_byte(s0)
-  let (b2, s2) = sample_byte(s1)
-  let (b3, s3) = sample_byte(s2)
-  let (b4, s4) = sample_byte(s3)
-  let (b5, s5) = sample_byte(s4)
-  let (b6, s6) = sample_byte(s5)
-  let (b7, s7) = sample_byte(s6)
+  let s =
+    if builtin.length_of_bytearray(st.output) == 0 || st.consumed >= 32 {
+      flush(st)
+    } else {
+      st
+    }
+  // Precondition for the single-slice read: `consumed` is a multiple of 8, so
+  // the 8 bytes lie in one 32-byte block and never straddle a flush boundary.
+  // This holds for SerializingChallenger64 (every draw is an 8-byte u64). A
+  // future non-8-byte sampler (e.g. a SerializingChallenger32 / 4-byte port for
+  // a 31-bit field) would violate it; fail loudly here rather than silently
+  // diverge from the byte-at-a-time reference (see docs/memory-profiling.md).
+  expect s.consumed % 8 == 0
   let v =
-    b0 + b1 * 256 + b2 * 65536 + b3 * 16777216 + b4 * 4294967296 + b5 * 1099511627776 + b6 * 281474976710656 + b7 * 72057594037927936
-  (v, s7)
+    builtin.bytearray_to_integer(
+      True,
+      builtin.slice_bytearray(24 - s.consumed, 8, s.output),
+    )
+  (v, ChallengerState { ..s, consumed: s.consumed + 8 })
 }
 
 // ── Public sampling API ───────────────────────────────────────────────────────
@@ -299,4 +316,44 @@ test different_observations_produce_different_samples() {
   let (v1, _) = sample_val(observe_val(init(), 1))
   let (v2, _) = sample_val(observe_val(init(), 2))
   v1 != v2
+}
+
+// ── sample_u64 equivalence (regression guard for the slice optimization) ───────
+
+/// The ORIGINAL per-byte sample_u64: pop 8 bytes back-to-front and combine
+/// LSB-first. Kept here as the reference the optimized sample_u64 must match.
+fn ref_sample_u64(st: ChallengerState) -> (Int, ChallengerState) {
+  let (b0, s0) = sample_byte(st)
+  let (b1, s1) = sample_byte(s0)
+  let (b2, s2) = sample_byte(s1)
+  let (b3, s3) = sample_byte(s2)
+  let (b4, s4) = sample_byte(s3)
+  let (b5, s5) = sample_byte(s4)
+  let (b6, s6) = sample_byte(s5)
+  let (b7, s7) = sample_byte(s6)
+  let v =
+    b0 + b1 * 256 + b2 * 65536 + b3 * 16777216 + b4 * 4294967296 + b5 * 1099511627776 + b6 * 281474976710656 + b7 * 72057594037927936
+  (v, s7)
+}
+
+/// sample_u64 must return the same v AND the same resulting (output, consumed)
+/// as the per-byte reference.
+fn su64_matches(st: ChallengerState) -> Bool {
+  let (v_new, s_new) = sample_u64(st)
+  let (v_ref, s_ref) = ref_sample_u64(st)
+  v_new == v_ref && s_new.consumed == s_ref.consumed && s_new.output == s_ref.output && s_new.input == s_ref.input
+}
+
+test sample_u64_equals_per_byte_reference() {
+  // A real 32-byte digest to read from.
+  let out = flush(observe_val(init(), 999)).output
+  // Every reachable aligned state: consumed in {0, 8, 16, 24}, plus the two
+  // flush-triggering cases (consumed >= 32, and output cleared by an observe).
+  su64_matches(ChallengerState { input: #"", output: out, consumed: 0 }) && su64_matches(
+    ChallengerState { input: #"", output: out, consumed: 8 },
+  ) && su64_matches(ChallengerState { input: #"", output: out, consumed: 16 }) && su64_matches(
+    ChallengerState { input: #"", output: out, consumed: 24 },
+  ) && su64_matches(ChallengerState { input: out, output: out, consumed: 32 }) && su64_matches(
+    ChallengerState { input: out, output: #"", consumed: 0 },
+  )
 }

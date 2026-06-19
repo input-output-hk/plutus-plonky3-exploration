@@ -136,6 +136,29 @@ across 22 queries × 13 rounds, plus tuple/`Option` churn in
 `acc_cols`/`dot_diff`/`do_verify_query`. Reducing it further means restructuring
 how the proof is traversed, not a local rewrite.
 
+### 3. Build FRI commit-phase leaves directly from the Ext2 row
+
+`verify_batch_ext` (the commit-phase Merkle leaf — 13 rounds × 22 queries = 286
+calls) flattened each `[Ext2(c0,c1), …]` row into an intermediate `List<Int>`
+via `append_int` — which is O(n²) (it reverses the accumulator on every element)
+— and then walked that list a second time to build the SHA-256 byte payload.
+Replaced with a single pass that serialises each `Ext2` straight to bytes
+(`le8(c0) ++ le8(c1)`), skipping the intermediate list and its O(n²) append.
+Byte-for-byte identical (pinned by the `ext_row_leaf_matches_flatten` test); the
+end-to-end proof still verifies. This cost was attributed to the Merkle bucket in
+the original profile (stubbing the Merkle verify also skipped the flatten), which
+is why removing it lands a much larger ~22 M than "leaf hashing" alone suggests.
+
+**Implemented — measured result (on top of #2):**
+
+| | mem | cpu |
+|---|---:|---:|
+| After #2 | 134,252,155 | 45,052,654,928 |
+| After #3 | 112,208,423 | 38,971,739,584 |
+| Reduction | −22,043,732 (−16.4%) | −6,080,915,344 (−13.5%) |
+
+Cumulative from the 232,852,244 baseline: **−51.8% mem, −48.8% cpu.**
+
 ## Deferred opportunities
 
 Not implemented here — each is gated on a decision rather than a mechanical

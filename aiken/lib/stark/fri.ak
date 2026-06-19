@@ -64,14 +64,14 @@ fn do_reverse_bits(n: Int, remaining: Int, acc: Int) -> Int {
 /// Implements TwoAdicFriFolding::fold_row for log_arity = 1 (binary fold).
 ///
 /// Arguments:
-///   parent_index      – index in the FOLDED domain (after >>= 1).
-///   log_folded_height – log2 of the folded domain size.
-///   beta              – FRI folding challenge (Ext2).
-///   e0                – evaluation at the POSITIVE point +x  (even storage index, position 0).
-///   e1                – evaluation at the NEGATIVE point -x  (odd storage index, position 1).
-///
-/// The evaluation point x is:
-///   x = two_adic_generator(log_folded_height + 1)^reverse_bits_len(parent_index, log_folded_height)
+///   beta  – FRI folding challenge (Ext2).
+///   e0    – evaluation at the POSITIVE point +x  (even storage index, position 0).
+///   e1    – evaluation at the NEGATIVE point -x  (odd storage index, position 1).
+///   inv_x – inverse of the evaluation point x for this round, where
+///           x = two_adic_generator(log_folded_height + 1)^reverse_bits_len(parent_index, log_folded_height).
+///           The caller carries inv_x down the fold chain by squaring rather
+///           than recomputing pow+inverse each round (see verify_query and
+///           docs/memory-profiling.md, optimization #1).
 ///
 /// Plonky3 builds xs = [+x, -x] (shifted_powers then reverse_slice_index_bits, a no-op for arity=2),
 /// so Lagrange interpolation through (+x, e0) and (-x, e1) gives:
@@ -79,24 +79,12 @@ fn do_reverse_bits(n: Int, remaining: Int, acc: Int) -> Int {
 ///
 /// x is a power of a generator so it is never zero; the inverse always exists.
 pub fn fold_row(
-  parent_index: Int,
-  log_folded_height: Int,
   beta: Ext2,
   // arity = 2^log_arity = 2
   e0: Ext2,
   e1: Ext2,
+  inv_x: Int,
 ) -> Ext2 {
-  // log_arity = 1
-  let x =
-    gf.pow(
-      gf.two_adic_generator(log_folded_height + 1),
-      reverse_bits_len(parent_index, log_folded_height),
-    )
-  let inv_x =
-    when gf.inverse(x) is {
-      None -> fail @"fold_row: x is zero"
-      Some(v) -> v
-    }
   // inv_2x = (2x)^{-1} = half * x^{-1}
   let inv_2x = gf.mul(half, inv_x)
   let sum_half = ext2.scale(ext2.add(e0, e1), half)
@@ -460,7 +448,7 @@ test fold_equal_evals_is_identity() {
   // When e0 = e1, fold = e0 regardless of beta (diff term vanishes).
   let e = Ext2 { c0: 5, c1: 3 }
   let beta = Ext2 { c0: 7, c1: 2 }
-  ext2.eq_fast(fold_row(0, 1, beta, e, e), e)
+  ext2.eq_fast(fold_row(beta, e, e, 1), e)
 }
 
 test fold_beta_zero_is_average() {
@@ -469,14 +457,14 @@ test fold_beta_zero_is_average() {
   // Verify: 12 * half mod p = 12 * (p+1)/2 = 6*(p+1) = 6p+6 ≡ 6 (mod p)
   let e0 = Ext2 { c0: 4, c1: 0 }
   let e1 = Ext2 { c0: 8, c1: 0 }
-  ext2.eq_fast(fold_row(0, 1, ext2.zero, e0, e1), Ext2 { c0: 6, c1: 0 })
+  ext2.eq_fast(fold_row(ext2.zero, e0, e1, 1), Ext2 { c0: 6, c1: 0 })
 }
 
 test fold_beta_zero_sym_average() {
   // e0 = p-1 = -1, e1 = 1: average = (-1+1)/2 = 0
   let e0 = Ext2 { c0: gf.prime - 1, c1: 0 }
   let e1 = Ext2 { c0: 1, c1: 0 }
-  ext2.eq_fast(fold_row(0, 1, ext2.zero, e0, e1), ext2.zero)
+  ext2.eq_fast(fold_row(ext2.zero, e0, e1, 1), ext2.zero)
 }
 
 test fold_symmetry() {
@@ -488,7 +476,7 @@ test fold_symmetry() {
   let e1 = Ext2 { c0: 200, c1: 150 }
   let beta = Ext2 { c0: 3, c1: 7 }
   let neg_beta = ext2.neg(beta)
-  ext2.eq_fast(fold_row(0, 1, beta, e0, e1), fold_row(0, 1, neg_beta, e1, e0))
+  ext2.eq_fast(fold_row(beta, e0, e1, 1), fold_row(neg_beta, e1, e0, 1))
 }
 
 test fold_produces_ext2() {
@@ -496,8 +484,48 @@ test fold_produces_ext2() {
   let e0 = Ext2 { c0: 1, c1: 0 }
   let e1 = Ext2 { c0: 0, c1: 1 }
   let beta = Ext2 { c0: 2, c1: 3 }
-  let result = fold_row(0, 1, beta, e0, e1)
+  let result = fold_row(beta, e0, e1, 1)
   result.c0 >= 0 && result.c0 < gf.prime && result.c1 >= 0 && result.c1 < gf.prime
+}
+
+test inv_x_chain_matches_scratch() {
+  // Optimization #1 correctness: carrying inv_x by ±squaring down the fold
+  // chain must match recomputing inverse(g_L^{rbl(index/2, L-1)}) from scratch
+  // at every round. Walk a 14-bit index from height 14 down to log_final_height.
+  let log_h0 = 14
+  let index0 = 12345
+  check_inv_x_chain(index0, log_h0, initial_inv_x(index0, log_h0))
+}
+
+fn check_inv_x_chain(index: Int, log_h: Int, inv_x: Int) -> Bool {
+  if log_h <= params.log_final_height {
+    True
+  } else {
+    let parent_index = index / 2
+    // From-scratch inverse evaluation point for THIS round.
+    let x =
+      gf.pow(
+        gf.two_adic_generator(log_h),
+        reverse_bits_len(parent_index, log_h - 1),
+      )
+    let scratch =
+      when gf.inverse(x) is {
+        None -> fail
+        Some(v) -> v
+      }
+    if inv_x != scratch {
+      False
+    } else {
+      let sq = gf.mul(inv_x, inv_x)
+      let next_inv_x =
+        if parent_index % 2 == 1 {
+          gf.neg(sq)
+        } else {
+          sq
+        }
+      check_inv_x_chain(parent_index, log_h - 1, next_inv_x)
+    }
+  }
 }
 
 // -- acc_cols / open_input --
@@ -612,7 +640,26 @@ pub fn verify_query(
     steps,
     folded_eval,
     0,
+    initial_inv_x(index, log_current_height),
   )
+}
+
+/// Inverse of the evaluation point x for the FIRST fold round:
+///   x = g_{log_current_height}^{reverse_bits_len(index / 2, log_current_height - 1)}
+/// Subsequent rounds derive inv_x by squaring (with a sign flip), so this is the
+/// only field inversion the whole fold chain needs. The exponent's base height
+/// is log_current_height because round 0 folds from log_current_height down to
+/// log_current_height - 1 (cf. docs/memory-profiling.md, optimization #1).
+fn initial_inv_x(index: Int, log_current_height: Int) -> Int {
+  let x =
+    gf.pow(
+      gf.two_adic_generator(log_current_height),
+      reverse_bits_len(index / 2, log_current_height - 1),
+    )
+  when gf.inverse(x) is {
+    None -> fail @"verify_query: evaluation point is zero"
+    Some(v) -> v
+  }
 }
 
 fn do_verify_query(
@@ -623,6 +670,7 @@ fn do_verify_query(
   steps: List<CommitPhaseStep<Ext2>>,
   folded_eval: Ext2,
   round: Int,
+  inv_x: Int,
 ) -> Option<(Ext2, Int)> {
   when (betas, commits, steps) is {
     // Base case: all rounds consumed — verify we landed at the expected final height.
@@ -673,8 +721,16 @@ fn do_verify_query(
               )
               None
             } else {
-              let next_eval =
-                fold_row(parent_index, log_folded_height, beta, e0, e1)
+              let next_eval = fold_row(beta, e0, e1, inv_x)
+              // Carry inv_x to the next (folded) layer: x_next = ±x², so
+              // inv_x_next = ±inv_x²; negate iff parent_index is odd.
+              let inv_x_sq = gf.mul(inv_x, inv_x)
+              let next_inv_x =
+                if parent_index % 2 == 1 {
+                  gf.neg(inv_x_sq)
+                } else {
+                  inv_x_sq
+                }
               do_verify_query(
                 parent_index,
                 log_folded_height,
@@ -683,6 +739,7 @@ fn do_verify_query(
                 rest_steps,
                 next_eval,
                 round + 1,
+                next_inv_x,
               )
             }
           }

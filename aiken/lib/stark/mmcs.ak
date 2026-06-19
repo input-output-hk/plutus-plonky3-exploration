@@ -129,10 +129,16 @@ pub fn verify_batch(
   verify_merkle_path(root, index, leaf, path)
 }
 
-/// Flatten an Ext2 row to base-field values, then verify via verify_batch.
+/// Verify an Ext2 row opening: flatten each Ext2 to base-field values and hash
+/// the single resulting leaf.
 ///
 /// Mirrors ExtensionMmcs::verify_batch which calls EF::flatten_to_base on each
 /// opened vector, effectively turning [Ext2(c0,c1), ...] into [c0, c1, ...].
+///
+/// Builds the leaf bytes directly from the Ext2 row (c0,c1 → 8 LE bytes each)
+/// rather than materialising the intermediate flattened List<Int> and walking
+/// it a second time. Byte-for-byte identical to
+/// `verify_batch(root, index, [flatten_ext_row(row)], path)`.
 ///
 /// Used for FRI commit-phase openings where ChallengeMmcs = ExtensionMmcs<Val, Ext2, ValMmcs>.
 pub fn verify_batch_ext(
@@ -141,8 +147,17 @@ pub fn verify_batch_ext(
   row: List<Ext2>,
   path: List<ByteArray>,
 ) -> Bool {
-  let flat = flatten_ext_row(row)
-  verify_batch(root, index, [flat], path)
+  let leaf = builtin.sha2_256(ext_row_to_bytes(row, #""))
+  verify_merkle_path(root, index, leaf, path)
+}
+
+/// Serialise [Ext2(c0,c1), ...] as le8(c0) ++ le8(c1) ++ ... appended to `acc`.
+fn ext_row_to_bytes(row: List<Ext2>, acc: ByteArray) -> ByteArray {
+  when row is {
+    [] -> acc
+    [e, ..rest] ->
+      ext_row_to_bytes(rest, append_le8(append_le8(acc, e.c0), e.c1))
+  }
 }
 
 /// Flatten [Ext2(c0,c1), ...] → [c0, c1, ...].
@@ -303,4 +318,13 @@ test verify_batch_ext_single_leaf() {
   let e = Ext2 { c0: 11, c1: 22 }
   let root = hash_leaf([11, 22])
   verify_batch_ext(root, 0, [e], [])
+}
+
+test ext_row_leaf_matches_flatten() {
+  // The direct Ext2 -> bytes leaf must equal the old flatten-then-hash path
+  // (verify_batch over [flatten_ext_row(row)]), for a multi-element row.
+  let row = [Ext2 { c0: 1, c1: 2 }, Ext2 { c0: 3, c1: 4 }]
+  builtin.sha2_256(ext_row_to_bytes(row, #"")) == hash_leaf_multi(
+    [flatten_ext_row(row)],
+  )
 }

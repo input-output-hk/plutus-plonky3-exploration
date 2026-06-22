@@ -129,9 +129,10 @@ pub fn pcs_verify(
 /// Identical transcript structure to pcs_verify; only the opened-values
 /// observation and the per-query input opening differ:
 ///   - opened values are observed rounds → matrices → points → values
-///     (two_adic_pcs.rs:678-684): for each instance, trace_local then
-///     trace_next; then for each instance, each quotient chunk.
-///   - open_input walks one Merkle row per instance in each of the two
+///     (two_adic_pcs.rs:678-684) in coms_to_verify order [main, quotient,
+///     permutation]: per instance trace_local then trace_next; per instance
+///     each quotient chunk; per instance permutation_local then permutation_next.
+///   - open_input walks one Merkle row per instance in each of the three
 ///     batches (fri.open_input_batch).
 ///
 /// zeta_next: all instances share the same trace domain (equal degree_bits,
@@ -181,7 +182,7 @@ pub fn pcs_verify_batch(
         trace @"FAIL: query PoW"
         False
       } else {
-        // ── 7. Query phase ────────────────────────────────────────────────
+        //   ── 7. Query phase ────────────────────────────────────────────────
         verify_all_queries_batch(
           st,
           log_global_max_height,
@@ -194,6 +195,7 @@ pub fn pcs_verify_batch(
           fp.query_proofs,
           proof.main_commit,
           proof.quotient_commit,
+          proof.permutation_commit,
           proof.opened_values,
           0,
         )
@@ -215,6 +217,7 @@ fn verify_all_queries_batch(
   query_proofs: List<QueryProof<Ext2>>,
   main_commit: ByteArray,
   quotient_commit: ByteArray,
+  permutation_commit: ByteArray,
   instances: List<InstanceOpenedValues<Ext2>>,
   query_idx: Int,
 ) -> Bool {
@@ -235,6 +238,7 @@ fn verify_all_queries_batch(
           qp,
           main_commit,
           quotient_commit,
+          permutation_commit,
           instances,
         )
       if !ok {
@@ -253,6 +257,7 @@ fn verify_all_queries_batch(
           rest,
           main_commit,
           quotient_commit,
+          permutation_commit,
           instances,
           query_idx + 1,
         )
@@ -274,12 +279,13 @@ fn verify_single_query_batch(
   qp: QueryProof<Ext2>,
   main_commit: ByteArray,
   quotient_commit: ByteArray,
+  permutation_commit: ByteArray,
   instances: List<InstanceOpenedValues<Ext2>>,
 ) -> Bool {
-  // input_proof in coms_to_verify order: [main, quotient_chunks]
-  // (no random/preprocessed/permutation rounds in this configuration).
+  // input_proof in coms_to_verify order: [main, quotient_chunks, permutation]
+  // (no random/preprocessed rounds in this configuration).
   when qp.input_proof is {
-    [main_opening, quotient_opening, ..] ->
+    [main_opening, quotient_opening, permutation_opening, ..] ->
       when
         fri.open_input_batch(
           index,
@@ -289,8 +295,10 @@ fn verify_single_query_batch(
           zeta_next,
           main_opening,
           quotient_opening,
+          permutation_opening,
           main_commit,
           quotient_commit,
+          permutation_commit,
           instances,
         )
       is {
@@ -315,9 +323,10 @@ fn verify_single_query_batch(
             }
             Some((folded_eval, final_idx)) -> {
               let x =
-                gf.pow(
+                fri.pow_reverse_bits(
                   gf.two_adic_generator(log_global_max_height),
-                  fri.reverse_bits_len(final_idx, log_global_max_height),
+                  final_idx,
+                  log_global_max_height,
                 )
               let poly_ok =
                 ext2.eq_fast(folded_eval, eval_final_poly(final_poly, x))
@@ -335,15 +344,32 @@ fn verify_single_query_batch(
 }
 
 /// Observe batch opened values rounds → matrices → points → values
-/// (two_adic_pcs.rs:678-684): main round first (per instance: trace_local at
-/// zeta, then trace_next at zeta_next), then the quotient round (per
-/// instance, each chunk at zeta).
+/// (two_adic_pcs.rs:678-684) in coms_to_verify order [main, quotient,
+/// permutation]: main round (per instance: trace_local at zeta, trace_next at
+/// zeta_next), then quotient round (per instance, each chunk at zeta), then
+/// permutation round (per instance: permutation_local at zeta, permutation_next
+/// at zeta_next).
 fn observe_batch_opened_values(
   st: ChallengerState,
   instances: List<InstanceOpenedValues<Ext2>>,
 ) -> ChallengerState {
   let st = observe_main_round(st, instances)
-  observe_quotient_round(st, instances)
+  let st = observe_quotient_round(st, instances)
+  observe_perm_round(st, instances)
+}
+
+fn observe_perm_round(
+  st: ChallengerState,
+  instances: List<InstanceOpenedValues<Ext2>>,
+) -> ChallengerState {
+  when instances is {
+    [] -> st
+    [inst, ..rest] -> {
+      let st = challenger.observe_exts(st, inst.permutation_local)
+      let st = challenger.observe_exts(st, inst.permutation_next)
+      observe_perm_round(st, rest)
+    }
+  }
 }
 
 fn observe_main_round(
@@ -551,9 +577,10 @@ fn verify_single_query(
             Some((folded_eval, final_idx)) -> {
               // Final poly evaluation point: no generator shift (verifier.rs:231–232).
               let x =
-                gf.pow(
+                fri.pow_reverse_bits(
                   gf.two_adic_generator(log_global_max_height),
-                  fri.reverse_bits_len(final_idx, log_global_max_height),
+                  final_idx,
+                  log_global_max_height,
                 )
               let poly_ok =
                 ext2.eq_fast(folded_eval, eval_final_poly(final_poly, x))

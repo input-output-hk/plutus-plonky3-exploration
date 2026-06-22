@@ -89,6 +89,80 @@ pub const two_adic_generators: List<Int> =
     0x185629dcda58878c,
   ]
 
+/// Multiplicative inverses of `two_adic_generators`: `two_adic_generators_inv[k]`
+/// is the inverse of the order-2^k two-adic generator. Since the inverse of
+/// `g = gᵏ` is `(g⁻¹)ᵏ`, precomputing these lets callers obtain `x⁻¹` for any
+/// power-of-generator `x` with a single `pow`, avoiding a full `inverse` (EEA).
+pub const two_adic_generators_inv: List<Int> =
+  [
+    // g[0]^-1
+    0x1,
+    // g[1]^-1
+    0xffffffff00000000,
+    // g[2]^-1
+    0xfffeffff00000001,
+    // g[3]^-1
+    0xffffffff00,
+    // g[4]^-1
+    0x1000000000,
+    // g[5]^-1
+    0xfffffffefffc0001,
+    // g[6]^-1
+    0xfdffffff00000001,
+    // g[7]^-1
+    0xffefffff00000011,
+    // g[8]^-1
+    0x1d62e30fa4a4eeb0,
+    // g[9]^-1
+    0x3de19c67cf496a74,
+    // g[10]^-1
+    0x3b9ae9d1d8d87589,
+    // g[11]^-1
+    0x76a40e0866a8e50d,
+    // g[12]^-1
+    0x9af01e431fbd6ea0,
+    // g[13]^-1
+    0x3712791d9eb0314a,
+    // g[14]^-1
+    0x409730a1895adfb6,
+    // g[15]^-1
+    0x158ee068c8241329,
+    // g[16]^-1
+    0x6d341b1c9a04ed19,
+    // g[17]^-1
+    0xcc9e5a57b8343b3f,
+    // g[18]^-1
+    0x22e1fbf03f8b95d6,
+    // g[19]^-1
+    0x46a23c48234c7df9,
+    // g[20]^-1
+    0xef8856969fe6ed7b,
+    // g[21]^-1
+    0xa52008ac564a2368,
+    // g[22]^-1
+    0xd46e5a4c36458c11,
+    // g[23]^-1
+    0x4bb9aee372cf655e,
+    // g[24]^-1
+    0x10eb845263814db7,
+    // g[25]^-1
+    0xc01f93fc71bb0b9b,
+    // g[26]^-1
+    0xea52f593bb20759a,
+    // g[27]^-1
+    0x91f3853f38e675d9,
+    // g[28]^-1
+    0x3ea7eab8d8857184,
+    // g[29]^-1
+    0xe4d14a114454645d,
+    // g[30]^-1
+    0xe2434909eec4f00b,
+    // g[31]^-1
+    0x95c0ec9a7ab50701,
+    // g[32]^-1
+    0x76b6b635b6fc8719,
+  ]
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 /// True iff `a` is a canonical field element (in [0, p)).
@@ -181,6 +255,13 @@ pub fn div(a: Int, b: Int) -> Option<Int> {
 /// Panics if k > 32.
 pub fn two_adic_generator(k: Int) -> Int {
   do_nth(two_adic_generators, k)
+}
+
+/// Return the inverse of the two-adic generator of order 2^k (0 ≤ k ≤ 32).
+/// Equal to `inverse(two_adic_generator(k))` but read from a precomputed table.
+/// Panics if k > 32.
+pub fn two_adic_generator_inverse(k: Int) -> Int {
+  do_nth(two_adic_generators_inv, k)
 }
 
 fn do_nth(xs: List<Int>, i: Int) -> Int {
@@ -324,6 +405,21 @@ fn repeat_inverse(a: Int, n: Int) -> Int {
       }
     repeat_inverse(next, n - 1)
   }
+}
+
+fn repeat_pow(base: Int, exp: Int, n: Int) -> Int {
+  if n <= 0 {
+    base
+  } else {
+    // vary the exponent slightly each round so it isn't constant-folded
+    repeat_pow(pow(base, exp), 16383 - n % 3, n - 1)
+  }
+}
+
+test pow_cost_100() {
+  // ~14-bit exponent, the regime FRI fold chain hits
+  let result = repeat_pow(two_adic_generator(14), 16383, 100)
+  result == result
 }
 
 test add_cost_100() {

@@ -128,9 +128,13 @@ pub fn stark_verify(proof: StarkProof<Ext2>, pis: FibPublicInputs) -> Bool {
 ///   observe_commitment(main_commit)                   // verifier.rs:196
 ///   for each instance: observe_vals(public_values[i]) // verifier.rs:197-199
 ///   for each instance: observe_ext(Ext2(0, 0))        // preprocessed width = 0
-///   (no global preprocessed commitment; no lookup challenges — empty lookups
-///    sample nothing in get_perm_challenges, common.rs:275-313;
-///    no permutation commitment)
+///   (no global preprocessed commitment)
+///   6× sample_ext()                                   // get_perm_challenges:
+///                                                     //  rep0-local, MulFib,
+///                                                     //  rep1-local (2 each);
+///                                                     //  rep1/fib reuse MulFib
+///   observe_commitment(permutation_commit)            // verifier.rs:222-224
+///   for each global lookup: observe_ext(expected_cumulated)  // verifier.rs:225-231
 ///   alpha = sample_ext()                              // verifier.rs:235
 ///   observe_commitment(quotient_commit)               // verifier.rs:238
 ///   (no random commitment: non-ZK)
@@ -148,6 +152,8 @@ pub fn stark_verify_batch(
       proof,
       params.batch_trace_widths,
       params.batch_num_quotient_chunks,
+      params.batch_aux_widths,
+      params.batch_num_global_lookups,
       params.num_fri_rounds(params.batch_max_degree_bits),
       params.fri_params.num_queries,
       params.final_poly_len,
@@ -169,6 +175,30 @@ pub fn stark_verify_batch(
     let st = challenger.observe_commitment(st, proof.main_commit)
     let st = observe_public_values(st, public_values)
     let st = observe_preprocessed_widths(st, params.batch_n_instances)
+    // ── Lookup challenges + permutation commitment (verifier.rs:210-232) ─────
+    // get_perm_challenges (common.rs:275-313) samples 2 challenges per lookup in
+    // registration order across instances; local lookups get fresh challenges,
+    // global lookups are shared by interaction name. For this config:
+    //   MulAir rep0 local  → fresh (a_l0, b_l0)
+    //   MulAir rep0 global → "MulFib" (a_mf, b_mf)   [sampled once here]
+    //   MulAir rep1 local  → fresh (a_l1, b_l1)
+    //   MulAir rep1 global → "MulFib" (reused)
+    //   FibAir     global  → "MulFib" (reused)
+    // → 6 ext samples, all BEFORE the permutation commit is observed.
+    let (a_l0, st) = challenger.sample_ext(st)
+    let (b_l0, st) = challenger.sample_ext(st)
+    let (a_mf, st) = challenger.sample_ext(st)
+    let (b_mf, st) = challenger.sample_ext(st)
+    let (a_l1, st) = challenger.sample_ext(st)
+    let (b_l1, st) = challenger.sample_ext(st)
+    // Per-instance challenge lists, indexed by 2*column (see eval_update,
+    // logup.rs:209-211). MulAir columns 0..3, FibAir column 0.
+    let mul_challenges = [a_l0, b_l0, a_mf, b_mf, a_l1, b_l1, a_mf, b_mf]
+    let fib_challenges = [a_mf, b_mf]
+    let st = challenger.observe_commitment(st, proof.permutation_commit)
+    // Observe every expected_cumulated, instance-flattened in registration
+    // order: [mul_rep0, mul_rep1, fib] (verifier.rs:222-232).
+    let st = observe_expected_cumulated(st, proof.expected_cumulated)
     let (alpha, st) = challenger.sample_ext(st)
     let st = challenger.observe_commitment(st, proof.quotient_commit)
     let (zeta, st) = challenger.sample_ext(st)
@@ -189,6 +219,8 @@ pub fn stark_verify_batch(
         vc.verify_constraints_batch(
           proof.opened_values,
           public_values,
+          proof.expected_cumulated,
+          [mul_challenges, fib_challenges],
           zeta,
           alpha,
           params.batch_max_degree_bits,
@@ -251,6 +283,20 @@ fn observe_preprocessed_widths(
     st
   } else {
     observe_preprocessed_widths(observe_usize_as_ext(st, 0), n_instances - 1)
+  }
+}
+
+/// Observe every global lookup's expected_cumulated value as an ext element,
+/// flattening the per-instance lists in order (verifier.rs:222-232:
+/// `global_lookup_data.iter().flatten()` → observe_algebra_element).
+fn observe_expected_cumulated(
+  st: ChallengerState,
+  expected_cumulated: List<List<Ext2>>,
+) -> ChallengerState {
+  when expected_cumulated is {
+    [] -> st
+    [inst, ..rest] ->
+      observe_expected_cumulated(challenger.observe_exts(st, inst), rest)
   }
 }
 

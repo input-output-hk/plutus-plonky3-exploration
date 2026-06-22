@@ -145,31 +145,39 @@ def run_generic(label: str, security_level: int, query_pow_bits: int, commit_pow
 
 
 def main() -> None:
-    security_level = 105
+    security_level = 93
     query_pow_bits = 16   # grind backing the QUERY phase; the rest must come from queries
     commit_pow_bits = 16  # grind backing the COMMIT/proximity-gaps phase (separate budget)
-    log_inv_rate = 2      # log_blowup -> rho = 2^-4
     air_log_degree = 13       # log2 of the message length (only used by the list/prox-gap terms)
     # (column, point) pairs in the alpha-batched DEEP quotient:
     # trace_width(2) * trace points(2: zeta, zeta*g)
     #   + num_quotient_chunks(1) * ext_degree(2) * quotient points(1: zeta)
-    num_batched_polys = 6
+    num_batched_polys = 46
     num_fri_rounds = air_log_degree  # degree_bits - log_final_poly_len (log_final_poly_len = 0)
 
     # field_size_bits is the EXTENSION field size = bits per Fiat-Shamir challenge.
+    #   Goldilocks^2 = 2*64 = 128
+    field_size_bits = 128
+    for log_inv_rate in [2, 4, 8, 16]:  # log_blowup -> rho = 2^-log_inv_rate
+        run_generic(f"Goldilocks^2 (log_inv_rate={log_inv_rate})",
+                    security_level, query_pow_bits, commit_pow_bits,
+                    log_inv_rate, field_size_bits, air_log_degree, num_batched_polys,
+                    num_fri_rounds)
+
+
     #   KoalaBear^4 = 4*31 = 124
     #   KoalaBear^5 = 5*31 = 155   (what leanVM uses)
-    #   Goldilocks^2 = 2*64 = 128
     #   Goldilocks^3 = 3*64 = 192
+    log_inv_rate = 4
     for label, field_size_bits in [
         ("KoalaBear^4", 124),
         ("KoalaBear^5 (leanVM)", 155),
-        ("Goldilocks^2", 128),
         ("Goldilocks^3", 192),
     ]:
         run_generic(label, security_level, query_pow_bits, commit_pow_bits,
                     log_inv_rate, field_size_bits, air_log_degree, num_batched_polys,
                     num_fri_rounds)
+
 
 
 if __name__ == "__main__":

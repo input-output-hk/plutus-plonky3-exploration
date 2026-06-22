@@ -241,14 +241,17 @@ fn compute_zps(
   i: Int,
   acc: List<Ext2>,
 ) -> Option<List<Ext2>> {
-  when vps_zeta is {
-    [] -> Some(list_reverse(acc))
-    [_, ..rest_zeta] ->
-      when zp_i(vps_zeta, vps_firsts, num_chunks, i) is {
-        None -> None
-        Some(zp) ->
-          compute_zps(rest_zeta, vps_firsts, num_chunks, i + 1, [zp, ..acc])
-      }
+  // `vps_zeta` must stay the FULL list every iteration: zp_i indexes j from 0
+  // over it, so shrinking it would misalign the Z_j(zeta) values and the
+  // i*n+j lookups into vps_firsts for i >= 1.
+  if i >= num_chunks {
+    Some(list_reverse(acc))
+  } else {
+    when zp_i(vps_zeta, vps_firsts, num_chunks, i) is {
+      None -> None
+      Some(zp) ->
+        compute_zps(vps_zeta, vps_firsts, num_chunks, i + 1, [zp, ..acc])
+    }
   }
 }
 
@@ -418,6 +421,20 @@ test fold_two_constraints() {
   let c1 = from_base(3)
   let alpha = from_base(5)
   eq_fast(fold_constraints([c0, c1], alpha), from_base(13))
+}
+
+test recompose_quotient_two_chunks() {
+  // Regression for the compute_zps full-list bug. With
+  //   Z_0(zeta)=2, Z_1(zeta)=3,  Z_1(first_0)=1, Z_0(first_1)=1
+  //   zp_0 = Z_1(zeta)/Z_1(first_0) = 3,  zp_1 = Z_0(zeta)/Z_0(first_1) = 2
+  // and chunks combining to 1 each, the result is 3*1 + 2*1 = 5.
+  // (The bug computed zp_1 from Z_1 instead of Z_0, giving 3+3 = 6.)
+  let vps_at_zeta = [from_base(2), from_base(3)]
+  let vps_at_firsts = [zero, from_base(1), from_base(1), zero]
+  let chunks = [[from_base(1), zero], [from_base(1), zero]]
+  recompose_quotient(vps_at_zeta, vps_at_firsts, chunks, 2) == Some(
+    from_base(5),
+  )
 }
 
 test scale_by_zero() {

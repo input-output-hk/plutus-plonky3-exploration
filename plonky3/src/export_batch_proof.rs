@@ -1,17 +1,23 @@
-/// Generate a Goldilocks batch STARK proof (MulAir + FibonacciAir, lookups off)
-/// and dump it as JSON to a file.
+/// Generate a Goldilocks batch STARK proof (MulAir + FibonacciAir, with a global
+/// LogUp lookup between them) and dump it as JSON to a file.
 ///
 /// Usage: cargo run --release --bin export_batch_proof batch_proof.json
 ///
 /// The JSON is then fed to convert.py to produce the Aiken batch test literal.
 ///
 /// The StarkConfig (field, hash, FRI params, cap_height) must stay identical to
-/// fib_batch.rs — both mirror aiken/lib/stark/params.ak. The AIRs are duplicated
-/// from fib_batch.rs (minus the lookup-registration wrappers, which contribute
-/// nothing while lookups are disabled) to keep this binary self-contained.
+/// fib_batch.rs — both mirror aiken/lib/stark/params.ak. The AIRs and their
+/// lookup-registration wrappers are duplicated from fib_batch.rs to keep this
+/// binary self-contained. Lookups: MulAir sends (a, b) per rep to the global
+/// interaction "MulFib" (multiplicity 1, two reps), FibAir receives (left,
+/// right) with multiplicity 2 — matching traces, so the cumulated sum is 0.
+use std::fmt::Debug;
 use std::fs;
 
-use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_air::{
+    Air, AirBuilder, AirLayout, BaseAir, BaseLeaf, PermutationAirBuilder, SymbolicAirBuilder,
+    SymbolicExpression, WindowAccess,
+};
 use p3_batch_stark::{ProverData, StarkGenericConfig, StarkInstance, prove_batch, verify_batch};
 use p3_challenger::{HashChallenger, SerializingChallenger64};
 use p3_commit::ExtensionMmcs;
@@ -20,7 +26,7 @@ use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField64};
 use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
-use p3_lookup::LookupAir;
+use p3_lookup::{Direction, Kind, Lookup, LookupAir};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -148,42 +154,257 @@ fn mul_trace<F: Field>(rows: usize, reps: usize) -> RowMajorMatrix<F> {
     RowMajorMatrix::new(v, w)
 }
 
-// ── Enum wrapper so both AIRs fit in one `&[A]` slice ─────────────────────────
+// ── MulAirLookups: MulAir wrapped with global lookup registration ─────────────
+// For each rep, sends (a, b) to the global interaction `global_names[rep]` with
+// multiplicity 1. (is_local is supported by the upstream code but left off here,
+// matching the shipped fib_batch.rs config.)
 
 #[derive(Clone)]
-enum BatchAir {
-    Mul(MulAir),
-    Fib(FibonacciAir),
+struct MulAirLookups {
+    air: MulAir,
+    is_local: bool,
+    is_global: bool,
+    num_lookups: usize,
+    global_names: Vec<String>,
 }
 
-impl<F> BaseAir<F> for BatchAir {
+impl MulAirLookups {
+    const fn new(
+        air: MulAir,
+        is_local: bool,
+        is_global: bool,
+        num_lookups: usize,
+        global_names: Vec<String>,
+    ) -> Self {
+        Self {
+            air,
+            is_local,
+            is_global,
+            num_lookups,
+            global_names,
+        }
+    }
+}
+
+impl<F> BaseAir<F> for MulAirLookups {
+    fn width(&self) -> usize {
+        <MulAir as BaseAir<F>>::width(&self.air)
+    }
+}
+
+impl<AB> Air<AB> for MulAirLookups
+where
+    AB::Var: Debug,
+    AB: AirBuilder + PermutationAirBuilder,
+{
+    fn eval(&self, builder: &mut AB) {
+        self.air.eval(builder);
+    }
+}
+
+impl<F: Field> LookupAir<F> for MulAirLookups {
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookups;
+        self.num_lookups += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        let mut lookups = Vec::new();
+        self.num_lookups = 0;
+
+        let symbolic_air_builder = SymbolicAirBuilder::<F>::new(AirLayout {
+            main_width: BaseAir::<F>::width(self),
+            ..Default::default()
+        });
+        let symbolic_main = symbolic_air_builder.main();
+        let symbolic_main_local = symbolic_main.current_slice();
+
+        let last_idx = symbolic_air_builder.main().width() - 1;
+        let lut = symbolic_main_local[last_idx]; // permutation-of-'a' column (local lookups only)
+
+        if self.is_global {
+            assert!(self.global_names.len() == self.air.reps);
+        }
+        for rep in 0..self.air.reps {
+            if self.is_local {
+                let base_idx = rep * 3;
+                let a = symbolic_main_local[base_idx];
+                let lookup_inputs = vec![
+                    (
+                        vec![a.into()],
+                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE)),
+                        Direction::Receive,
+                    ),
+                    (
+                        vec![lut.into()],
+                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE)),
+                        Direction::Send,
+                    ),
+                ];
+                let local_lookup = LookupAir::register_lookup(self, Kind::Local, &lookup_inputs);
+                lookups.push(local_lookup);
+            }
+
+            if self.is_global {
+                let base_idx = rep * 3;
+                let a = symbolic_main_local[base_idx];
+                let b = symbolic_main_local[base_idx + 1];
+                let lookup_inputs = vec![(
+                    vec![a.into(), b.into()],
+                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE)),
+                    Direction::Send,
+                )];
+                let global_lookup = LookupAir::register_lookup(
+                    self,
+                    Kind::Global(self.global_names[rep].clone()),
+                    &lookup_inputs,
+                );
+                lookups.push(global_lookup);
+            }
+        }
+
+        lookups
+    }
+}
+
+// ── FibAirLookups: FibonacciAir wrapped with global lookup registration ───────
+// Receives (left, right) from the global interaction (default name "MulFib")
+// with multiplicity 2.
+
+#[derive(Clone)]
+struct FibAirLookups {
+    air: FibonacciAir,
+    is_global: bool,
+    num_lookups: usize,
+    name_and_mult: Option<(String, u64)>,
+}
+
+impl FibAirLookups {
+    const fn new(
+        air: FibonacciAir,
+        is_global: bool,
+        num_lookups: usize,
+        name_and_mult: Option<(String, u64)>,
+    ) -> Self {
+        Self {
+            air,
+            is_global,
+            num_lookups,
+            name_and_mult,
+        }
+    }
+}
+
+impl<F: Field> BaseAir<F> for FibAirLookups {
+    fn width(&self) -> usize {
+        <FibonacciAir as BaseAir<F>>::width(&self.air)
+    }
+
+    fn num_public_values(&self) -> usize {
+        <FibonacciAir as BaseAir<F>>::num_public_values(&self.air)
+    }
+}
+
+impl<AB: PermutationAirBuilder> Air<AB> for FibAirLookups {
+    fn eval(&self, builder: &mut AB) {
+        self.air.eval(builder);
+    }
+}
+
+impl<F: Field> LookupAir<F> for FibAirLookups {
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        let new_idx = self.num_lookups;
+        self.num_lookups += 1;
+        vec![new_idx]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        let mut lookups = Vec::new();
+        self.num_lookups = 0;
+
+        if self.is_global {
+            let symbolic_air_builder = SymbolicAirBuilder::<F>::new(AirLayout {
+                main_width: BaseAir::<F>::width(self),
+                num_public_values: 3,
+                ..Default::default()
+            });
+            let symbolic_main = symbolic_air_builder.main();
+            let symbolic_main_local = symbolic_main.row_slice(0).unwrap();
+
+            let left = symbolic_main_local[0];
+            let right = symbolic_main_local[1];
+
+            let (name, multiplicity) = match &self.name_and_mult {
+                Some((n, m)) => (n.clone(), *m),
+                None => ("MulFib".to_string(), 2),
+            };
+
+            let lookup_inputs = vec![(
+                vec![left.into(), right.into()],
+                SymbolicExpression::Leaf(BaseLeaf::Constant(F::from_u64(multiplicity))),
+                Direction::Receive,
+            )];
+            let global_lookup =
+                LookupAir::register_lookup(self, Kind::Global(name), &lookup_inputs);
+            lookups.push(global_lookup);
+        }
+
+        lookups
+    }
+}
+
+// ── Enum wrapper so both lookup AIRs fit in one `&[A]` slice ──────────────────
+
+#[derive(Clone)]
+enum DemoAirWithLookups {
+    MulLookups(MulAirLookups),
+    FibLookups(FibAirLookups),
+}
+
+impl<F: Field> BaseAir<F> for DemoAirWithLookups {
     fn width(&self) -> usize {
         match self {
-            Self::Mul(a) => <MulAir as BaseAir<F>>::width(a),
-            Self::Fib(a) => <FibonacciAir as BaseAir<F>>::width(a),
+            Self::MulLookups(a) => <MulAirLookups as BaseAir<F>>::width(a),
+            Self::FibLookups(a) => <FibAirLookups as BaseAir<F>>::width(a),
         }
     }
 
     fn num_public_values(&self) -> usize {
         match self {
-            Self::Mul(a) => <MulAir as BaseAir<F>>::num_public_values(a),
-            Self::Fib(a) => <FibonacciAir as BaseAir<F>>::num_public_values(a),
+            Self::MulLookups(a) => <MulAirLookups as BaseAir<F>>::num_public_values(a),
+            Self::FibLookups(a) => <FibAirLookups as BaseAir<F>>::num_public_values(a),
         }
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for BatchAir {
+impl<AB: PermutationAirBuilder> Air<AB> for DemoAirWithLookups
+where
+    AB::Var: Debug,
+{
     fn eval(&self, builder: &mut AB) {
         match self {
-            Self::Mul(a) => a.eval(builder),
-            Self::Fib(a) => a.eval(builder),
+            Self::MulLookups(a) => <MulAirLookups as Air<AB>>::eval(a, builder),
+            Self::FibLookups(a) => <FibAirLookups as Air<AB>>::eval(a, builder),
         }
     }
 }
 
-// No lookups: the default LookupAir methods register nothing, so
-// commitments.permutation stays None and verify_batch takes the no-lookup path.
-impl<F: Field> LookupAir<F> for BatchAir {}
+impl<F: Field> LookupAir<F> for DemoAirWithLookups {
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::MulLookups(a) => LookupAir::<F>::add_lookup_columns(a),
+            Self::FibLookups(a) => LookupAir::<F>::add_lookup_columns(a),
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        match self {
+            Self::MulLookups(a) => LookupAir::<F>::get_lookups(a),
+            Self::FibLookups(a) => LookupAir::<F>::get_lookups(a),
+        }
+    }
+}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -214,13 +435,24 @@ fn main() {
     let mul_trace = mul_trace::<Val>(n, reps);
     let fib_trace = fib_trace::<Val>(0, 1, n);
     // Take the expected last-row value straight from the trace: u64 Fibonacci
-    // overflows long before n = 1024, the field value is what the constraint sees.
+    // overflows long before n = 8192, the field value is what the constraint sees.
     let fib_last = fib_trace.row_slice(n - 1).unwrap()[1];
     let pvs: Vec<Vec<Val>> = vec![vec![], vec![Val::ZERO, Val::ONE, fib_last]];
 
+    // MulAir registers both a local lookup (a vs its permuted `lut` column) and
+    // a global lookup (sends (a,b) to "MulFib") per rep. Instance order
+    // [Mul, Fib] must match aiken/lib/stark/params.ak.
+    let mul_air_lookups = MulAirLookups::new(
+        MulAir { reps },
+        true,
+        true,
+        0,
+        vec!["MulFib".to_string(), "MulFib".to_string()],
+    );
+    let fib_air_lookups = FibAirLookups::new(FibonacciAir {}, true, 0, None);
     let mut airs = vec![
-        BatchAir::Mul(MulAir { reps }),
-        BatchAir::Fib(FibonacciAir {}),
+        DemoAirWithLookups::MulLookups(mul_air_lookups),
+        DemoAirWithLookups::FibLookups(fib_air_lookups),
     ];
 
     let is_zk = config.is_zk();
@@ -241,6 +473,7 @@ fn main() {
     let proof = prove_batch(&config, &instances, &prover_data);
     println!("Proving time = {:?}", start.elapsed());
 
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
     let start = std::time::Instant::now();
     let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &proof.degree_bits);
     verify_batch(&config, &airs, &proof, &pvs, &prover_data.common).expect("verification failed");

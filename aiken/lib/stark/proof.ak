@@ -183,33 +183,43 @@ pub type StarkProof<ext> {
 
 /// Out-of-domain evaluations for one instance of a batch proof.
 ///
-/// Mirrors OpenedValuesWithLookups<Challenge> (batch-stark/src/proof.rs:41-49)
-/// restricted to its base_opened_values (uni-stark OpenedValues): the
-/// permutation_local / permutation_next lookup openings are always empty while
-/// lookups are disabled, so they are omitted here. Add them when porting the
-/// LogUp lookup argument.
+/// Mirrors OpenedValuesWithLookups<Challenge> (batch-stark/src/proof.rs:41-49):
+/// the uni-stark base_opened_values (trace + quotient) plus the permutation
+/// (lookup running-sum) openings.
 ///
 /// Same field meanings as OpenedValues above, but sized per instance:
 ///   MulAir      : trace_local/next have 7 elements (reps = 2 → 2*3+1 columns)
 ///   FibonacciAir: trace_local/next have 2 elements
 /// Both instances have degree-2 constraints → 1 quotient chunk each, with
 /// DIMENSION = 2 ext elements per chunk.
+///
+/// permutation_local / permutation_next:
+///   Base-flattened openings of the running-sum columns at zeta and zeta*g.
+///   The committed permutation matrix has width aux_width * DIMENSION (each
+///   ext running-sum column flattened into DIMENSION base columns), so these
+///   lists have length aux_width * DIMENSION (MulAir: 2*2 = 4, FibonacciAir:
+///   1*2 = 2). They are recomposed to aux_width ext columns in
+///   verify_constraints (same basis dot-product as quotient recomposition).
+///   Both lists are empty for an instance with no lookups.
 pub type InstanceOpenedValues<ext> {
   trace_local: List<ext>,
   trace_next: List<ext>,
+  permutation_local: List<ext>,
+  permutation_next: List<ext>,
   quotient_chunks: List<List<ext>>,
 }
 
 /// A complete Plonky3 batch-STARK proof (multi-AIR, shared commitments).
 ///
 /// Mirrors BatchProof<SC> (batch-stark/src/proof.rs:12-24) flattened for the
-/// no-lookup, non-ZK configuration:
+/// global-lookup, non-ZK configuration:
 ///   - commitments (BatchCommitments, proof.rs:28-38) is flattened into
-///     main_commit + quotient_commit; the permutation and random commitments
-///     are None without lookups/ZK and are omitted.
+///     main_commit + permutation_commit + quotient_commit; the random
+///     commitment is None without ZK and is omitted.
 ///   - opened_values (BatchOpenedValues, proof.rs:52-56) is the instances list
 ///     directly, in prover order: [MulAir, FibonacciAir].
-///   - global_lookup_data is empty without lookups and is omitted.
+///   - global_lookup_data (proof.rs:18) is flattened into expected_cumulated:
+///     just the LookupData.expected_cumulated values are needed on-chain.
 ///
 /// degree_bits:
 ///   Per-instance log2 of the extended trace domain size (= log2(n_i) + is_zk,
@@ -219,14 +229,26 @@ pub type InstanceOpenedValues<ext> {
 ///   Single Merkle root committing to ALL instances' main trace LDE matrices
 ///   (multi-matrix MMCS commitment).
 ///
+/// permutation_commit:
+///   Single Merkle root committing to all instances' permutation (running-sum)
+///   matrices. Present because the AIRs register global lookups.
+///
 /// quotient_commit:
 ///   Single Merkle root committing to all quotient chunk matrices across all
 ///   instances.
+///
+/// expected_cumulated:
+///   Per instance, the prover-claimed final running-sum value of each global
+///   lookup, in registration order (MulAir: [rep0, rep1]; FibonacciAir: [fib]).
+///   Used both in the transcript and in each lookup's last-row constraint; the
+///   per-interaction sum must be zero (checked at the end of verification).
 pub type BatchProof<ext> {
   degree_bits: List<Int>,
   main_commit: Commitment,
+  permutation_commit: Commitment,
   quotient_commit: Commitment,
   opened_values: List<InstanceOpenedValues<ext>>,
+  expected_cumulated: List<List<ext>>,
   opening_proof: FriProof<ext>,
 }
 
@@ -289,24 +311,32 @@ pub fn valid_fri_proof_shape(
 
 /// Check that one instance's opened values have the expected shape.
 ///
-/// Same checks as valid_opened_values_shape, per instance:
+/// Same checks as valid_opened_values_shape, per instance, plus the lookup
+/// permutation openings:
 ///   - trace_local and trace_next have exactly trace_width elements
 ///   - quotient_chunks has exactly num_quotient_chunks entries
+///   - permutation_local and permutation_next have exactly aux_width * 2
+///     elements (aux_width ext running-sum columns, each flattened to
+///     DIMENSION = 2 base columns). aux_width = 0 means no lookups.
 pub fn valid_instance_opened_values_shape(
   ov: InstanceOpenedValues<ext>,
   trace_width: Int,
   num_quotient_chunks: Int,
+  aux_width: Int,
 ) -> Bool {
   list_len(ov.trace_local) == trace_width && list_len(ov.trace_next) == trace_width && list_len(
     ov.quotient_chunks,
-  ) == num_quotient_chunks
+  ) == num_quotient_chunks && list_len(ov.permutation_local) == aux_width * 2 && list_len(
+    ov.permutation_next,
+  ) == aux_width * 2
 }
 
 /// Check the shape of a whole batch proof against per-instance parameters.
 ///
-/// trace_widths and nums_quotient_chunks carry one entry per instance, in
-/// prover order; the proof must have exactly that many instances (checked via
-/// the zip-walk: length mismatches in any of the three lists fail).
+/// All four per-instance lists (trace_widths, nums_quotient_chunks, aux_widths,
+/// nums_global_lookups) carry one entry per instance, in prover order; the
+/// proof must have exactly that many instances (length mismatches in any zip
+/// fail).
 ///
 /// The FRI proof shape is shared across instances and checked exactly as in
 /// the uni-stark case via valid_fri_proof_shape.
@@ -314,6 +344,8 @@ pub fn valid_batch_proof_shape(
   proof: BatchProof<ext>,
   trace_widths: List<Int>,
   nums_quotient_chunks: List<Int>,
+  aux_widths: List<Int>,
+  nums_global_lookups: List<Int>,
   num_rounds: Int,
   num_queries: Int,
   final_poly_len: Int,
@@ -322,6 +354,10 @@ pub fn valid_batch_proof_shape(
     proof.opened_values,
     trace_widths,
     nums_quotient_chunks,
+    aux_widths,
+  ) && valid_expected_cumulated_shape(
+    proof.expected_cumulated,
+    nums_global_lookups,
   ) && valid_fri_proof_shape(
     proof.opening_proof,
     num_rounds,
@@ -330,17 +366,37 @@ pub fn valid_batch_proof_shape(
   )
 }
 
-/// Zip-walk over (instances, widths, chunk counts); False on length mismatch.
+/// Zip-walk over (instances, widths, chunk counts, aux widths); False on any
+/// length mismatch.
 fn valid_instances_shape(
   instances: List<InstanceOpenedValues<ext>>,
   trace_widths: List<Int>,
   nums_quotient_chunks: List<Int>,
+  aux_widths: List<Int>,
 ) -> Bool {
-  when (instances, trace_widths, nums_quotient_chunks) is {
-    ([], [], []) -> True
-    ([ov, ..rest_ov], [w, ..rest_w], [nc, ..rest_nc]) ->
-      if valid_instance_opened_values_shape(ov, w, nc) {
-        valid_instances_shape(rest_ov, rest_w, rest_nc)
+  when (instances, trace_widths, nums_quotient_chunks, aux_widths) is {
+    ([], [], [], []) -> True
+    ([ov, ..rest_ov], [w, ..rest_w], [nc, ..rest_nc], [aw, ..rest_aw]) ->
+      if valid_instance_opened_values_shape(ov, w, nc, aw) {
+        valid_instances_shape(rest_ov, rest_w, rest_nc, rest_aw)
+      } else {
+        False
+      }
+    _ -> False
+  }
+}
+
+/// Per instance, expected_cumulated must have one entry per global lookup;
+/// False on any length mismatch (including instance-count mismatch).
+fn valid_expected_cumulated_shape(
+  expected_cumulated: List<List<ext>>,
+  nums_global_lookups: List<Int>,
+) -> Bool {
+  when (expected_cumulated, nums_global_lookups) is {
+    ([], []) -> True
+    ([ec, ..rest_ec], [n, ..rest_n]) ->
+      if list_len(ec) == n {
+        valid_expected_cumulated_shape(rest_ec, rest_n)
       } else {
         False
       }

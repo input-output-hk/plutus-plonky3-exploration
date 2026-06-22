@@ -56,6 +56,33 @@ fn do_reverse_bits(n: Int, remaining: Int, acc: Int) -> Int {
   }
 }
 
+/// Compute `base ^ reverse_bits_len(n, bits)` in a single pass over `bits`,
+/// fusing reverse_bits_len with gf.pow so the bits are walked only once.
+///
+/// reverse_bits_len reverses n's `bits`-bit window, so bit i of n becomes bit
+/// (bits-1-i) of the exponent. Running square-and-multiply MSB-first on that
+/// exponent (square, then conditionally multiply) consumes its bits high-to-low,
+/// which is exactly n's bits low-to-high (n % 2, n / 2). Same field-mul count as
+/// gf.pow, minus the separate reverse_bits_len loop.
+pub fn pow_reverse_bits(base: Int, n: Int, bits: Int) -> Int {
+  do_pow_reverse_bits(base % gf.prime, n, bits, 1)
+}
+
+fn do_pow_reverse_bits(base: Int, n: Int, remaining: Int, acc: Int) -> Int {
+  if remaining == 0 {
+    acc
+  } else {
+    let squared = gf.mul(acc, acc)
+    let next =
+      if n % 2 == 1 {
+        gf.mul(squared, base)
+      } else {
+        squared
+      }
+    do_pow_reverse_bits(base, n / 2, remaining - 1, next)
+  }
+}
+
 // ── B. FRI fold (binary, TwoAdicFriFolding) ───────────────────────────────────
 
 /// Fold two sibling FRI evaluations into the parent evaluation.
@@ -87,16 +114,15 @@ pub fn fold_row(
   e1: Ext2,
 ) -> Ext2 {
   // log_arity = 1
-  let x =
-    gf.pow(
-      gf.two_adic_generator(log_folded_height + 1),
-      reverse_bits_len(parent_index, log_folded_height),
-    )
+  // x = g^k is a power of a generator, so x⁻¹ = (g⁻¹)^k. Using the precomputed
+  // inverse generator yields inv_x with a single pow, avoiding gf.inverse(x)
+  // (and the separate pow for x itself).
   let inv_x =
-    when gf.inverse(x) is {
-      None -> fail @"fold_row: x is zero"
-      Some(v) -> v
-    }
+    pow_reverse_bits(
+      gf.two_adic_generator_inverse(log_folded_height + 1),
+      parent_index,
+      log_folded_height,
+    )
   // inv_2x = (2x)^{-1} = half * x^{-1}
   let inv_2x = gf.mul(half, inv_x)
   let sum_half = ext2.scale(ext2.add(e0, e1), half)
@@ -164,9 +190,10 @@ pub fn open_input(
         let x =
           gf.mul(
             gf.generator,
-            gf.pow(
+            pow_reverse_bits(
               gf.two_adic_generator(log_global_max_height),
-              reverse_bits_len(index, log_global_max_height),
+              index,
+              log_global_max_height,
             ),
           )
         // Step 3: DEEP-polynomial denominators.
@@ -272,12 +299,15 @@ pub fn open_input_batch(
   zeta_next: Ext2,
   main_opening: BatchOpening,
   quotient_opening: BatchOpening,
+  permutation_opening: BatchOpening,
   main_commit: ByteArray,
   quotient_commit: ByteArray,
+  permutation_commit: ByteArray,
   instances: List<InstanceOpenedValues<Ext2>>,
 ) -> Option<Ext2> {
-  // Step 1: Verify both multi-matrix Merkle proofs (reduced_index = index,
-  // since the batch max height equals the global max height).
+  // Step 1: Verify all three multi-matrix Merkle proofs (reduced_index = index,
+  // since the batch max height equals the global max height). Rounds are in
+  // coms_to_verify order: main, quotient, permutation.
   let main_ok =
     mmcs.verify_batch(
       main_commit,
@@ -292,16 +322,24 @@ pub fn open_input_batch(
       quotient_opening.opened_values,
       quotient_opening.opening_proof,
     )
-  if !main_ok || !quot_ok {
+  let perm_ok =
+    mmcs.verify_batch(
+      permutation_commit,
+      index,
+      permutation_opening.opened_values,
+      permutation_opening.opening_proof,
+    )
+  if !main_ok || !quot_ok || !perm_ok {
     None
   } else {
     // Step 2: LDE evaluation point, shared by all matrices (equal heights).
     let x =
       gf.mul(
         gf.generator,
-        gf.pow(
+        pow_reverse_bits(
           gf.two_adic_generator(log_global_max_height),
-          reverse_bits_len(index, log_global_max_height),
+          index,
+          log_global_max_height,
         ),
       )
     // Step 3: DEEP-polynomial denominators.
@@ -312,7 +350,9 @@ pub fn open_input_batch(
       )
     is {
       (Some(inv_z), Some(inv_zn)) ->
-        // Step 4: accumulate the reduced opening: main round, then quotient.
+        // Step 4: accumulate the reduced opening over the rounds in
+        // coms_to_verify order: main, then quotient, then permutation. One
+        // continuous alpha-power chain (all matrices share one log_height).
         when
           acc_main_round(
             main_opening.opened_values,
@@ -335,7 +375,21 @@ pub fn open_input_batch(
                 ap_main,
               )
             is {
-              Some((ro, _)) -> Some(ro)
+              Some((ro_quot, ap_quot)) ->
+                when
+                  acc_perm_round(
+                    permutation_opening.opened_values,
+                    instances,
+                    inv_z,
+                    inv_zn,
+                    alpha,
+                    ro_quot,
+                    ap_quot,
+                  )
+                is {
+                  Some((ro, _)) -> Some(ro)
+                  None -> None
+                }
               None -> None
             }
           None -> None
@@ -364,6 +418,33 @@ fn acc_main_round(
         acc_cols(row, inst.trace_local, inv_z, alpha, ro, alpha_pow)
       let (ro2, ap2) = acc_cols(row, inst.trace_next, inv_zn, alpha, ro1, ap1)
       acc_main_round(rest_rows, rest_insts, inv_z, inv_zn, alpha, ro2, ap2)
+    }
+    _ -> None
+  }
+}
+
+/// Permutation round: one Merkle row per instance's running-sum matrix, opened
+/// at zeta (permutation_local) and zeta_next (permutation_next) — same shape as
+/// the main round. Assumes every instance registered lookups (true for this
+/// config: MulAir aux_width 4, FibAir 1); a length mismatch falls through to
+/// None. (Upstream skips instances with empty permutation, verifier.rs:411-421.)
+fn acc_perm_round(
+  rows: List<List<Int>>,
+  instances: List<InstanceOpenedValues<Ext2>>,
+  inv_z: Ext2,
+  inv_zn: Ext2,
+  alpha: Ext2,
+  ro: Ext2,
+  alpha_pow: Ext2,
+) -> Option<(Ext2, Ext2)> {
+  when (rows, instances) is {
+    ([], []) -> Some((ro, alpha_pow))
+    ([row, ..rest_rows], [inst, ..rest_insts]) -> {
+      let (ro1, ap1) =
+        acc_cols(row, inst.permutation_local, inv_z, alpha, ro, alpha_pow)
+      let (ro2, ap2) =
+        acc_cols(row, inst.permutation_next, inv_zn, alpha, ro1, ap1)
+      acc_perm_round(rest_rows, rest_insts, inv_z, inv_zn, alpha, ro2, ap2)
     }
     _ -> None
   }
@@ -448,6 +529,20 @@ test rbl_roundtrip_4_bits() {
 
 test rbl_roundtrip_14_bits() {
   reverse_bits_len(reverse_bits_len(1234, 14), 14) == 1234
+}
+
+// -- pow_reverse_bits (fused reverse_bits_len + gf.pow) --
+
+test prb_matches_pow_and_reverse() {
+  let g = gf.two_adic_generator(14)
+  // Equivalent to the old two-pass form for a spread of indices.
+  and {
+    pow_reverse_bits(g, 0, 14) == gf.pow(g, reverse_bits_len(0, 14)),
+    pow_reverse_bits(g, 1, 14) == gf.pow(g, reverse_bits_len(1, 14)),
+    pow_reverse_bits(g, 6, 14) == gf.pow(g, reverse_bits_len(6, 14)),
+    pow_reverse_bits(g, 8191, 14) == gf.pow(g, reverse_bits_len(8191, 14)),
+    pow_reverse_bits(g, 1234, 14) == gf.pow(g, reverse_bits_len(1234, 14)),
+  }
 }
 
 // -- fold_row --

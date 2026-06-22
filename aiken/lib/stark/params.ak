@@ -21,7 +21,7 @@ pub const num_quotient_chunks: Int = 1
 pub const batch_n_instances: Int = 2
 
 /// Per-instance log2 of the extended trace domain size (= log2(n_i), is_zk = 0).
-/// Both traces have 2^10 rows.
+/// Both traces have 2^13 rows (export_batch_proof.rs: log_n = 13).
 pub const batch_degree_bits: List<Int> = [13, 13]
 
 /// Largest per-instance degree_bits; drives the FRI round count.
@@ -33,9 +33,23 @@ pub const batch_trace_widths: List<Int> = [7, 2]
 /// Per-instance public value counts: MulAir has none, FibonacciAir has (a, b, x).
 pub const batch_num_public_values: List<Int> = [0, 3]
 
-/// Per-instance quotient chunk counts: both AIRs have max constraint degree 2,
-/// so log_num_quotient_chunks = 0 and 1 chunk each (cf. num_quotient_chunks).
-pub const batch_num_quotient_chunks: List<Int> = [1, 1]
+/// Per-instance quotient chunk counts. With lookups enabled, the running-sum
+/// transition/last-row constraints are `selector * ((s_next-s_local)*denom -
+/// num)`: the selector (degree 1) times (s factor degree 1) times denom
+/// (degree up to 2 for the local lookups' 2-tuple) makes both AIRs degree 3, so
+/// log_num_quotient_chunks = log2_ceil(3-1) = 1 → 2 chunks each.
+pub const batch_num_quotient_chunks: List<Int> = [2, 2]
+
+/// Per-instance auxiliary (running-sum) column counts = number of registered
+/// lookups per instance. MulAir registers, per rep, one local lookup (a vs its
+/// permuted `lut` column) and one global lookup (sends (a,b) to "MulFib")
+/// → 4 columns; FibAir receives one global lookup → 1. The committed
+/// permutation matrix is aux_width * DIMENSION base columns wide.
+pub const batch_aux_widths: List<Int> = [4, 1]
+
+/// Per-instance global-lookup counts (= expected_cumulated length per instance).
+/// Only global lookups carry an expected_cumulated value: MulAir 2, FibAir 1.
+pub const batch_num_global_lookups: List<Int> = [2, 1]
 
 /// Fri parameters
 pub type FriParams {
@@ -47,13 +61,37 @@ pub type FriParams {
   query_proof_of_work_bits: Int,
 }
 
+// These must stay identical to the Rust prover's FriParameters
+// (plonky3/src/export_proof.rs and export_batch_proof.rs) — they define the
+// proof, so any change here also means regenerating the proof. "CHANGEABLE"
+// below means "supported by this verifier if mirrored on the prover"; "FIXED"
+// means the verifier hard-codes the value and other settings would be verified
+// incorrectly.
 pub const fri_params: FriParams =
   FriParams {
+    // CHANGEABLE (security/cost). LDE (Low-Degree Extension) blowup factor. Used only via
+    // log_max_height = degree_bits + log_blowup, log_final_height, and
+    // log_global_max_height. Larger ⇒ more soundness per query but a bigger LDE.
     log_blowup: 8,
+    // FIXED at 0. The final-polynomial check (pcs_verify.ak) evaluates the
+    // final poly at a full-domain point, which only coincides with the correct
+    // value when the poly is a constant (length 2^0 = 1). A non-constant final
+    // poly would need evaluation on the smaller final domain — not implemented.
     log_final_poly_len: 0,
+    // FIXED at 1 (binary folding only). fold_row takes exactly two evaluations
+    // (e0, e1) and verify_query rejects any commit-phase step whose log_arity
+    // != 1 or that does not carry exactly one sibling. This field is not read
+    // anywhere — the binary structure is hard-coded in fri.ak — so changing it
+    // does nothing; higher arities are genuinely unsupported.
     max_log_arity: 1,
+    // CHANGEABLE (soundness/cost). Number of FRI query openings; the verifier
+    // loops over every query_proofs entry.
     num_queries: 22,
+    // CHANGEABLE (soundness). Commit-phase grinding bits, checked per round via
+    // challenger.check_pow in pcs_verify.process_commit_rounds.
     commit_proof_of_work_bits: 16,
+    // CHANGEABLE (soundness). Query-phase grinding bits, checked once before the
+    // query loop via challenger.check_pow.
     query_proof_of_work_bits: 16,
   }
 

@@ -176,7 +176,7 @@ def write_output(out, out_name, src_path):
         f"../aiken/lib/stark/{out_name}"
     )
     out_path = os.path.normpath(out_path)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(out)
     print(f"Written to {out_path}")
 
@@ -389,7 +389,7 @@ def main():
         print("Usage: python3 convert.py proof.json", file=sys.stderr)
         sys.exit(1)
 
-    with open(sys.argv[1]) as f:
+    with open(sys.argv[1], encoding="utf-8") as f:
         obj = json.load(f)
 
     if "batch" in os.path.basename(sys.argv[1]):

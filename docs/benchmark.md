@@ -181,9 +181,9 @@ query_pow = 16, commit_pow = 16, Goldilocks², Fibonacci circuit n = 2¹³ = 819
 
 | log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
 | ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
-| 2          | 83          | 161.07705ms  | 384126             | 2.610589ms     | 496.03 M   | 164.06 B   |
-| 4          | 42          | 304.008673ms | 235050             | 1.575957ms     | 274.52 M   | 90.89 B    |
-| 8          | 22          | 2.397145461s | 165661             | 1.168463ms     | 168.38 M   | 55.82 B    |
+| 2          | 83          | 161.07705ms  | 384126             | 2.610589ms     | 396.60M    | 135.48 B   |
+| 4          | 42          | 304.008673ms | 235050             | 1.575957ms     | 221.34 M   | 75.44 B    |
+| 8          | 22          | 2.397145461s | 165661             | 1.168463ms     | 137.76 M   | 46.77 B    |
 | 16         | unreachable | —            | —                  | —              | —          | —          |
 
 At 96-bit security with
@@ -197,8 +197,8 @@ query_pow = 16, commit_pow = 16, Goldilocks², Fibonacci circuit n = 2¹³ = 819
 
 | log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
 | ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
-| 2          | 98          | 162.101287ms | 453422             | 2.819012ms     | 583.79 M   | 193.05 B   |
-| 4          | 51          | 307.952548ms | 285277             | 1.771928ms     | 330.99 M   | 109.56 B   |
+| 2          | 98          | 162.101287ms | 453422             | 2.819012ms     | 467.44 M   | 159.68 B   |
+| 4          | 51          | 307.952548ms | 285277             | 1.771928ms     | 267.66 M   | 91.22 B    |
 | 8          | unreachable | —            | —                  | —              | —          | —          |
 
 As mentioned above, a larger `log_blowup` lowers the commit-phase soundness, so beyond some point the
@@ -211,9 +211,9 @@ reach 100-bit security, and `log_blowup = 8` cannot reach 105-bit.
 
 | log_blowup | num_queries | Proving time | Proof size (bytes) | Verifying time | plutus_mem | plutus_cpu |
 | ---------- | ----------- | ------------ | ------------------ | -------------- | ---------- | ---------- |
-| 2          | 83          | 163.475623ms | 443613             | 3.07692ms      | 781.02 M   | 262.83 B   |
-| 4          | 42          | 425.279241ms | 268290             | 1.738771ms     | 423.45 M   | 142.53 B   |
-| 8          | 22          | 4.985834057s | 186345             | 1.130509ms     | 251.94 M   | 84.79 B    |
+| 2          | 83          | 163.475623ms | 443613             | 3.07692ms      | 681.31 M   | 233.93 B   |
+| 4          | 42          | 425.279241ms | 268290             | 1.738771ms     | 369.38 M   | 126.65 B   |
+| 8          | 22          | 4.985834057s | 186345             | 1.130509ms     | 220.13 M   | 75.27 B    |
 | 16         | unreachable | —            | —                  | —              | —          | —          |
 
 #### Cost breakdown
@@ -222,22 +222,22 @@ For log_blowup = 8 and num_queries = 22:
 
 |     |                                                   | plutus_mem | plutus_cpu |
 | --- | ------------------------------------------------- | ---------- | ---------- |
-| (1) | Full proof                                        | 251.94 M   | 84.79 B    |
-| (2) | Without verifying queries                         | 19.11 M    | 6.63 B     |
-| (3) | Without verifying queries and constraints         | 11.46 M    | 4.10 B     |
-| (4) | Per-query, estimated as ((1) − (2)) / num_queries | 10.58 M    | 3.55 B     |
+| (1) | Full proof                                        | 220.13 M   | 75.27 B    |
+| (2) | Without verifying queries                         | 11.80 M    | 4.10 B     |
+| (3) | Without verifying queries and constraints         | 4.15 M     | 1.56 B     |
+| (4) | Per-query, estimated as ((1) − (2)) / num_queries | 9.47 M     | 3.23 B     |
 
 Reading these numbers:
 
-- The per-query cost (4) of 10.58 M is below the ~14 M per-transaction memory limit, so each
+- The per-query cost (4) of 9.47 M is below the ~14 M per-transaction memory limit, so each
   query proof can be verified in a single transaction. More complex
   circuits are expected to cost more and might not fit.
 - The query-independent work — the transcript, PCS setup, and constraint evaluation — is cheap: (2)
-  shows the common part (incl. constraints) at 19.11 M, and (3) shows 11.46 M once constraints are
-  excluded too. It comfortably splits across two transactions.
+  shows the common part (incl. constraints) at 11.80 M, and (3) shows 4.15 M once constraints are
+  excluded too. The whole common part fits under the ~14 M limit, so it needs only one transaction.
 
-So at log_blowup = 8 we expect to verify the full proof in 22 + 2 = 24 transactions (one per query,
-plus two for the common part). If a single query were to exceed the limit and need two transactions,
+So at log_blowup = 8 we expect to verify the full proof in 22 + 1 = 23 transactions (one per query,
+plus one for the common part). If a single query were to exceed the limit and need two transactions,
 log_blowup = 4 with num_queries = 42 (lower per-query cost) could become the better trade-off.
 
 ---

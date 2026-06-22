@@ -56,27 +56,27 @@ python3 convert.py batch_proof.json                             # → aiken/lib/
 cd ../aiken && aiken check -m stark_verify_batch_goldilocks_real_proof
 ```
 
-`aiken check` prints the memory/CPU budget for each `test` (e.g. `[mem: 251.94 M, cpu: 84.79 B]`) — staying under Plutus limits is the metric this project tracks.
+`aiken check` prints the memory/CPU budget for each `test` (e.g. `[mem: 220.13 M, cpu: 75.27 B]`) — staying under Plutus limits is the metric this project tracks.
 
 ## Main results
 
 A full on-chain verification of the batch-stark proof (Goldilocks², `FibonacciAir` + `MulAir`,
-each `n = 2¹³`) measured as a single Aiken `test` costs **251.94 M mem / 84.79 B cpu** at
+each `n = 2¹³`) measured as a single Aiken `test` costs **220.13 M mem / 75.27 B cpu** at
 `log_blowup = 8`. The Plutus per-transaction limit is far smaller, so the proof is verified across
-**multiple transactions** — one per FRI query plus a couple for the shared work.
+**multiple transactions** — one per FRI query plus one for the shared work.
 
 At **93-bit security** (`query_pow = 16`, `commit_pow = 16`), trading `log_blowup` against
 `num_queries`:
 
 | log_blowup | num_queries | Proof size (bytes) | plutus_mem | plutus_cpu |
 | ---------- | ----------- | ------------------ | ---------- | ---------- |
-| 2          | 83          | 443,613            | 781.02 M   | 262.83 B   |
-| 4          | 42          | 268,290            | 423.45 M   | 142.53 B   |
-| 8          | 22          | 186,345            | 251.94 M   | 84.79 B    |
+| 2          | 83          | 443,613            | 681.31 M   | 233.93 B   |
+| 4          | 42          | 268,290            | 369.38 M   | 126.65 B   |
+| 8          | 22          | 186,345            | 220.13 M   | 75.27 B    |
 
-With `log_blowup = 8`, the **per-query cost is ≈ 10.58 M mem / 3.55 B cpu** — comfortably under the
-~14 M per-transaction memory limit — and the query-independent work fits in two transactions, so the
-full proof is verifiable in roughly **22 + 2 = 24 transactions**.
+With `log_blowup = 8`, the **per-query cost is ≈ 9.47 M mem / 3.23 B cpu** — comfortably under the
+~14 M per-transaction memory limit — and the query-independent work fits in one transaction, so the
+full proof is verifiable in roughly **22 + 1 = 23 transactions**.
 
 See [docs/benchmark.md](docs/benchmark.md) for the complete tables, including the uni-stark results,
 cross-field comparisons, proven-soundness (Johnson-bound) numbers, and recursion/aggregation benchmarks.

@@ -20,9 +20,14 @@ Cardano's current ZK path (Groth16/PLONK over BLS12-381) is pairing-based and th
 
 The repo has two halves that talk to each other through a JSON proof file:
 
-- **`plonky3/`** — Rust. Generates STARK proofs with [Plonky3](https://github.com/Plonky3/Plonky3) v0.5.1 and serialises them to JSON.
-- **`aiken/`** — Aiken (Plutus v3). A from-scratch re-implementation of the Plonky3 uni-stark and batch-stark verifier that runs **on-chain**, specialised to the Goldilocks field and a `FibonacciAir` example circuit.
+- **`aiken/`** — Aiken (Plutus v3). A from-scratch re-implementation of the Plonky3
+  uni-stark and batch-stark verifier that runs on-chain.
+- **`plonky3/`** — Rust. Generates STARK proofs with
+  [Plonky3](https://github.com/Plonky3/Plonky3) v0.5.1 and serialises them to JSON. Also hosts
+  `convert.py`, which turns a dumped proof into the generated Aiken `test` that verifies it on-chain.
 - **`docs/`** — [`benchmark.md`](docs/benchmark.md) (all cost numbers), [`plonky3.md`](docs/plonky3.md) (FRI/PCS/MMCS verification spec), and the [proposal](docs/proposal-plonky3-stark-verification-on-cardano.md).
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for a developer-facing map of both halves: the module layout, the proof pipeline, and how the Rust and Aiken sides mirror each other.
 
 ## Quickstart
 
@@ -62,7 +67,7 @@ cd ../aiken && aiken check -m stark_verify_batch_goldilocks_real_proof
 
 A full on-chain verification of the batch-stark proof (Goldilocks², `FibonacciAir` + `MulAir`,
 each `n = 2¹³`) measured as a single Aiken `test` costs **220.13 M mem / 75.27 B cpu** at
-`log_blowup = 8`. The Plutus per-transaction limit is far smaller, so the proof is verified across
+`log_blowup = 8`. The Plutus per-transaction limit is far smaller, so the proof can be verified across
 **multiple transactions** — one per FRI query plus one for the shared work.
 
 At **93-bit security** (`query_pow = 16`, `commit_pow = 16`), trading `log_blowup` against

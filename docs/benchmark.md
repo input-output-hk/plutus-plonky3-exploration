@@ -244,6 +244,15 @@ log_blowup = 4 with num_queries = 42 (lower per-query cost) could become the bet
 
 ## Plonky3-Recursion
 
+The benchmarks in this section are obtained by
+running the examples from the upstream [Plonky3/plonky3-recursion](https://github.com/Plonky3/plonky3-recursion)
+repo. To reproduce them, check out that repo first and run the commands below from its root:
+
+```bash
+git clone https://github.com/Plonky3/plonky3-recursion
+cd plonky3-recursion
+```
+
 ### Recursive Keccak
 
 ```bash
